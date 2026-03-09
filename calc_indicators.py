@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 技术指标计算脚本 - calc_indicators.py
-版本: 1.0.0 (2026-03-09)
+版本: 1.1.0 (2026-03-09)
 
 功能: 从 stdin 读取 stock-data kline 的 JSON 输出，
       精确计算 MA/RSI/MACD/SEPA/量价 等技术指标。
+      v1.1.0: 更新数据完整性评级为A-F六级
 
 用法:
-  stock-data kline sh600519 day 200 qfq | python scripts/calc_indicators.py
-  stock-data kline usAAPL day 200 qfq | python scripts/calc_indicators.py
+  stock-data kline sh600519 day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
+  stock-data kline usAAPL day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 
 依赖: 仅使用 Python 标准库（json/sys/math），无需 pip install
 """
@@ -437,31 +438,56 @@ def analyze_volume(kline_data):
 def assess_data_completeness(kline_count):
     """
     评估数据完整性等级，用于美股降级规则。
+    v5.1更新: 使用A-F六级分类，与SKILL.md保持一致
 
-    返回: dict，含 level (A/B/C)、description、score_cap
+    返回: dict，含 level (A/B/C/D/E/F)、description、score_cap
     """
-    if kline_count >= 200:
+    if kline_count >= 252:
         return {
             "level": "A",
-            "description": f"数据完整（{kline_count}根K线）",
-            "score_cap": 60,  # 技术面满分
+            "description": f"数据完整（{kline_count}根K线，满足所有指标）",
+            "score_cap": 60,
+        }
+    elif kline_count >= 220:
+        return {
+            "level": "A-",
+            "description": f"数据基本完整（{kline_count}根K线，52周高低点可能不完整）",
+            "score_cap": 58,
+        }
+    elif kline_count >= 200:
+        return {
+            "level": "B",
+            "description": f"数据部分不足（{kline_count}根K线，MA200趋势判断不可用）",
+            "score_cap": 55,
         }
     elif kline_count >= 50:
         return {
-            "level": "B",
-            "description": f"数据部分不足（{kline_count}根K线，MA200不可用）",
-            "score_cap": 50,
+            "level": "C",
+            "description": f"数据不足（{kline_count}根K线，MA200不可用）",
+            "score_cap": 45,
+        }
+    elif kline_count >= 35:
+        return {
+            "level": "D",
+            "description": f"数据严重不足（{kline_count}根K线，仅RSI可用）",
+            "score_cap": 30,
+        }
+    elif kline_count >= 15:
+        return {
+            "level": "E",
+            "description": f"数据极度不足（{kline_count}根K线，仅RSI可用）",
+            "score_cap": 15,
         }
     elif kline_count > 2:
         return {
-            "level": "C",
-            "description": f"数据严重不足（{kline_count}根K线）",
-            "score_cap": 20,
+            "level": "F",
+            "description": f"数据近乎无效（{kline_count}根K线，MA/RSI/MACD全部不可用）",
+            "score_cap": 5,
         }
     else:
         return {
-            "level": "C",
-            "description": f"数据极度不足（{kline_count}根K线），技术面不可用",
+            "level": "F",
+            "description": f"数据无效（{kline_count}根K线），技术面不可用",
             "score_cap": 0,
         }
 

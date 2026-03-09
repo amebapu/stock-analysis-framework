@@ -1,4 +1,4 @@
-# 米勒维尼投资分析框架 v5.0 (100分制)
+# 米勒维尼投资分析框架 v5.1 (100分制)
 
 基于马克·米勒维尼《股市魔法师》SEPA策略的中短线投资分析框架。
 
@@ -7,6 +7,8 @@
 - **100分制评分体系**：基本面(25) + 技术面(60) + 催化剂(15)
 - **仓位建议**：A+(20%) / A(15%) / B(10%) / C(5%) / D(0%)
 - **纯数据驱动**：零估算、零编造、所有指标Python脚本计算
+- **强制252根K线**：满足52周高低点+MA200趋势判断
+- **大盘环境必查**：标普500/上证指数/恒指趋势评估
 - **美股代码格式支持**：自动适配不同接口的代码格式要求
 
 ## 依赖
@@ -34,19 +36,23 @@ cd stock-analysis-framework
 ### 基本分析流程
 
 ```bash
-# 1. 获取K线数据并计算技术指标
-stock-data kline usTSLA day 200 qfq | python3 calc_indicators.py
+# 1. 大盘环境（必须获取）
+stock-data kline usSPY day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python3 calc_indicators.py
 
-# 2. 获取财务数据（美股注意代码格式）
+# 2. 获取K线数据并计算技术指标（必须252根）
+stock-data kline usTSLA day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python3 calc_indicators.py
+
+# 3. 获取财务数据（美股注意代码格式）
 stock-data finance TSLA.N income 4
+stock-data finance TSLA.N cashflow 4  # 若失败则剔除该项分数
 
-# 3. 获取筹码分布
+# 4. 获取筹码分布
 stock-data chip usTSLA
 
-# 4. 获取新闻资讯
+# 5. 获取新闻资讯
 stock-data news usTSLA 1 10 2
 
-# 5. 获取机构研报
+# 6. 获取机构研报
 stock-data report usTSLA 1 10 1
 ```
 
@@ -54,7 +60,7 @@ stock-data report usTSLA 1 10 1
 
 | 数据类型 | 正确格式 | 示例 |
 |----------|----------|------|
-| K线数据 | `usTSLA` | `stock-data kline usTSLA day 200 qfq` |
+| K线数据 | `usTSLA` | `stock-data kline usTSLA day 252 qfq` |
 | 财务数据 | `TSLA.N` / `TSLA.O` | `stock-data finance TSLA.N income 4` |
 | 实时行情 | `usTSLA` | `stock-data quote usTSLA` |
 | 筹码分布 | `usTSLA` | `stock-data chip usTSLA` |
@@ -130,6 +136,7 @@ stock-data report usTSLA 1 10 1
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | v5.0 | 2026-03-09 | 初始发布，100分制评分体系 |
+| v5.1 | 2026-03-09 | 强制252根K线/大盘必查/ROE现金流处理/计算过程展示 |
 
 ## 免责声明
 
