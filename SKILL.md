@@ -5,18 +5,20 @@ category: "investment"
 tags: ["米勒维尼", "SEPA", "股票分析", "中短线", "100分制"]
 sources: ["stock-data", "calc_indicators.py", "股市魔法师"]
 created_by: "AI Assistant"
-last_updated: "2026-03-09T2145"
+last_updated: "2026-03-09T2255"
 ---
 
-# 米勒维尼投资分析框架 v5.0 (100分制)
+# 米勒维尼投资分析框架 v5.1 (100分制)
 
-> **版本**: v5.0  
+> **版本**: v5.1  
 > **创建时间**: 2026-03-09  
+> **最后更新**: 2026-03-09T2255  
 > **核心方法论**: 马克·米勒维尼《股市魔法师》SEPA策略  
 > **设计目的**: 对博主推荐标的进行独立第三方验证，辅助建仓决策  
 > **仓位上限**: 单标的最高20%  
 > **数据源**: stock-data v2.3.0（唯一数据源，腾讯自选股）  
-> **计算层**: Python calc_indicators.py（确定性计算，零幻觉）
+> **计算层**: Python calc_indicators.py（确定性计算，零幻觉）  
+> **强制要求**: 252根K线 / 大盘环境必查 / 计算过程展示
 
 ---
 
@@ -127,13 +129,37 @@ stock-data finance SNDK.OQ income 4
 | 连续2季度亏损 | 净利润为负 | -10分 |
 
 **计算示例**：
+**计算公式**（必须展示计算过程）：
+```
+基础分: 25分
+- 净利润增长 XX% (<25%): [-5/+10]分
+- 营收增长 XX% (<20%): [-5/+5]分
+- ROE XX% (<17%): [-5/+5]分（若无法获取，此项剔除）
+- 现金流: [+0/+5]分（若无法获取，此项剔除）
+= 25 - 扣分 + 加分 = XX分
+（保底分15分，不扣除超过10分）
+最终: XX/25分（或XX/20分，若某项剔除）
+```
+
+**ROE获取方式**：
+- 优先从`stock-data finance <code> summary`查找"净资产收益率"
+- 若未直接提供，使用公式：ROE = 净利润 / 股东权益 × 100%
+- 若无法获取股东权益，标记"未获取"并剔除该项分值
+
+**现金流获取失败处理**：
+- 若`stock-data finance <code> cashflow`返回错误或空数据：
+  1. 标记现金流为"未获取"
+  2. 从基本面满分中剔除5分（满分变为20分）
+  3. 评分公式调整为：实际得分/20分
+
+**计算示例**：
 ```
 基础分: 25分
 - 净利润增长15% (<25%): -5分
 - 营收增长-3% (<20%): -5分  
 - ROE 4.9% (<17%): -5分
 - 现金流为正: +0分
-= 25 - 5 - 5 - 5 = 10分
+= 25 - 5 - 5 - 5 + 0 = 10分
 但给保底分15分（不扣除超过10分）
 最终: 15/25分
 ```
@@ -150,7 +176,8 @@ stock-data finance SNDK.OQ income 4
 
 #### 2.3.1 SEPA趋势模板（40分）
 
-**获取方式**：`stock-data kline <code> day 200 qfq | python scripts/calc_indicators.py`
+**获取方式**：`stock-data kline <code> day 252 qfq | python calc_indicators.py`
+> ⚠️ **必须调用252根K线**以满足52周高低点+MA200趋势判断（需220根）+冗余
 
 | 检查项 | 标准 | 分值 | 计算方式 |
 |--------|------|------|----------|
@@ -216,10 +243,14 @@ stock-data finance SNDK.OQ income 4
 
 | K线数量 | 数据完整性 | 处理方式 | 技术面上限 |
 |---------|-----------|---------|-----------|
-| ≥200根 | A级 | 正常计算所有指标 | 60分 |
-| 50~199根 | B级 | MA200标N/A，其余正常 | 50分 |
-| 3~49根 | C级 | MA/RSI/MACD全部N/A | 20分（仅chip+量价） |
-| ≤2根 | C级 | 技术面全部N/A | 0分 |
+| ≥252根 | A级 | 正常计算所有指标 | 60分 |
+| 220~251根 | A-级 | 正常计算，但52周高低点可能不完整 | 58分 |
+| 200~219根 | B级 | MA200趋势判断标N/A | 55分 |
+| 50~199根 | C级 | MA200标N/A，RSI/MACD正常 | 45分 |
+| 35~49根 | D级 | RSI正常，MACD/MA200标N/A | 30分 |
+| 15~34根 | E级 | 仅RSI可用 | 15分 |
+| 3~14根 | F级 | MA/RSI/MACD全部N/A | 5分（仅chip） |
+| ≤2根 | F级 | 技术面全部N/A | 0分 |
 
 > 报告中必须标注数据完整性等级（A/B/C），让用户清楚技术面评分的可信度。
 
@@ -316,41 +347,64 @@ stock-data finance SNDK.OQ income 4
 
 **使用方法**：
 ```bash
-# A股 - 200日前复权K线
-stock-data kline sh600519 day 200 qfq | python scripts/calc_indicators.py
+# A股 - 252日前复权K线（满足所有指标计算需求）
+stock-data kline sh600519 day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 
-# 美股 - 200日前复权K线
-stock-data kline usAAPL day 200 qfq | python scripts/calc_indicators.py
+# 美股 - 252日前复权K线
+stock-data kline usAAPL day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 
 # 港股
-stock-data kline hk00700 day 200 qfq | python scripts/calc_indicators.py
+stock-data kline hk00700 day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 
-# 大盘 SPY 检查
-stock-data kline usSPY day 200 qfq | python scripts/calc_indicators.py
+# 大盘 SPY 检查（美股大盘）
+stock-data kline usSPY day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 ```
 
-### 5.2 技术指标计算公式
+### 5.2 技术指标计算公式与K线需求
 
-| 指标 | 公式 | 最少所需K线 |
-|------|------|-----------|
-| MA(N) | SMA = Σ(最近N个收盘价) / N | N 根 |
-| RSI(14) | RS = avg_gain / avg_loss, RSI = 100 - 100/(1+RS) (Wilder平滑) | 15 根 |
-| MACD | DIF = EMA(12) - EMA(26), DEA = EMA(DIF, 9), 柱 = 2*(DIF-DEA) | 35 根 |
-| EMA(N) | EMA_t = price × k + EMA_(t-1) × (1-k), k = 2/(N+1) | N 根 |
+| 指标 | 公式 | 最少所需K线 | 说明 |
+|------|------|-----------|------|
+| MA50 | SMA = Σ(最近50个收盘价) / 50 | **50根** | 基础均线 |
+| MA150 | SMA = Σ(最近150个收盘价) / 150 | **150根** | 中期趋势 |
+| MA200 | SMA = Σ(最近200个收盘价) / 200 | **200根** | 长期趋势 |
+| MA200趋势判断 | 对比20日前MA200 | **220根** | 判断走平/上升 |
+| RSI(14) | Wilder平滑法 | **15根** | 相对强弱 |
+| MACD(12,26,9) | EMA(12)-EMA(26), DEA=EMA(DIF,9) | **35根** | 趋势动量 |
+| 52周高低点 | max/min(highs/lows) | **252根** | 一年区间 |
+
+**关键结论**：
+- **最低要求**: 调用 `day 250` 才能满足所有指标
+- **MA200趋势判断**: 需要220根（当前200根 + 20日前200根）
+- **52周高低点**: 需要252根（一年交易日）
+- **建议调用**: `stock-data kline <code> day 252 qfq`
 
 ---
 
 ## 六、完整分析流程
 
-### 步骤1：大盘环境检查（建议）
+### 步骤1：大盘环境检查（必须执行，不跳过）
 ```bash
-# SPY 趋势（MA50/MA200 判断）
-stock-data kline usSPY day 200 qfq | python scripts/calc_indicators.py
+# 标普500趋势（MA50/MA200 判断）- 美股
+stock-data kline usSPY day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 
-# VIX 恐慌指数
+# 上证指数 - A股
+stock-data kline sh000001 day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
+
+# 恒生指数 - 港股
+stock-data kline hkHSI day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
+
+# VIX 恐慌指数（美股情绪指标）
 stock-data quote usVIX
 ```
-→ 输出环境建议，不参与个股评分
+
+**大盘环境输出要求**：
+```
+大盘环境: [良好/一般/偏弱/差]
+├─ 指数: [SPY/上证指数/恒指] $XXX
+├─ 趋势: [>MA50 ✅, >MA200 ✅ / 部分破位 / 全面破位]
+├─ VIX: XX [舒适区<20 / 警示区20-30 / 恐慌区>30]
+└─ 建议: [大盘环境XXX，建议整体仓位XX%]
+```
 
 ### 步骤2：个股数据获取
 ```bash
@@ -358,7 +412,8 @@ stock-data quote usVIX
 stock-data quote <code>
 
 # 2. K线 + 全部技术指标（MA/RSI/MACD/SEPA/量价 一次算完）
-stock-data kline <code> day 200 qfq | python scripts/calc_indicators.py
+# ⚠️ 必须调用252根K线以满足52周高低点+MA200趋势判断
+stock-data kline <code> day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 
 # 3. 筹码分布
 stock-data chip <code>
@@ -496,26 +551,49 @@ stock-data hkfund <code> day 20           # 港股
 
 ### 8.1 数据获取
 ```bash
-# 获取所有数据
+# 1. 大盘环境（必须获取）
+stock-data kline usSPY day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
+stock-data quote usVIX
+
+# 2. 个股数据
 stock-data quote usTSLA
-stock-data kline usTSLA day 200 qfq | python scripts/calc_indicators.py
+stock-data kline usTSLA day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 stock-data chip usTSLA
-stock-data finance usTSLA income 4
-stock-data finance usTSLA cashflow 4
+stock-data finance TSLA.N income 4
+stock-data finance TSLA.N cashflow 4  # 若失败则剔除该项分数
 stock-data news usTSLA 1 10 2
 stock-data report usTSLA
 ```
 
 ### 8.2 数据分析
 
-**基本面（15/25分）**：
+**基本面（15/25分）计算过程**：
+```
+基础分: 25分
+- 净利润增长: -47% (<25%): -5分
+- 营收增长: -3% (<20%): -5分
+- ROE: 4.9% (<17%): -5分
+- 现金流: 为正: +5分
+= 25 - 5 - 5 - 5 + 5 = 15分
+（保底15分，已满足）
+最终: 15/25分
+```
+详细项：
 - 净利润增长: -47% (❌, -5分) [来源: finance]
 - 营收增长: -3% (❌, -5分) [来源: finance]
 - ROE: 4.9% (❌, -5分) [来源: finance]
 - 现金流: 为正 (✅, +5分) [来源: finance]
-- 小计: 25-5-5-5+5 = 15分（保底）
 
-**技术面（38/60分）**：
+**技术面（38/60分）计算过程**：
+```
+SEPA模板: 4/6项通过 → 28/40分
+RSI: 41 (健康区间40-70) → 5/5分
+MACD: 空头减弱 → 3/5分
+量价: 量能平稳 → 2/5分
+筹码: 港美股降权 → 0/3分
+= 28 + 5 + 3 + 2 + 0 = 38/60分
+```
+详细项：
 - SEPA模板: 4/6项通过 → 28/40分 [来源: Python]
   - 股价>MA50: $396<$428 ❌
   - MA50>MA150>MA200: $428>$414>$392 ✅
@@ -527,17 +605,30 @@ stock-data report usTSLA
 - MACD: 空头减弱 → 3/5分 [来源: Python]
 - 量价配合: 量能平稳 → 2/5分 [来源: Python]
 - 筹码: 港美股降权 → 0/3分（美股筹码数据有限） [来源: chip]
-- 小计: 28+5+3+2+0 = 38分
 
-**催化剂（8/15分）**：
+**催化剂（8/15分）计算过程**：
+```
+新闻情绪: 2条/10 (<3条): 0/3分
+无重大利空: ✅: 3/3分
+机构评级: 正面为主: 2/3分
+流动性: >$50M: 3/3分
+资金流向: N/A: 0/3分（美股无此数据）
+= 0 + 3 + 2 + 3 + 0 = 8/15分
+```
+详细项：
 - 新闻情绪: 正面2条/10（不足3条）→ 0/3分 [来源: news]
 - 无重大利空: ✅ → 3/3分 [来源: news]
 - 机构评级: 研报偏正面 → 2/3分 [来源: report]
 - 流动性: 日成交远超$50M → 3/3分 [来源: quote]
 - 资金流向: N/A（美股无此数据）→ 0/3分
-- 小计: 0+3+2+3+0 = 8分
 
-**总分**: 15+38+8 = 61分 (C级，建议观望)
+**总分计算**：
+```
+总分 = 基本面 + 技术面 + 催化剂
+     = 15 + 38 + 8
+     = 61分
+评级: C级 (60-69分区间)
+```
 
 ### 8.3 结论
 - 评级: C级
@@ -558,6 +649,7 @@ stock-data report usTSLA
 | v4.0 | 2026-03-09 | 整合豆包/Gemini建议，六层框架 |
 | v4.1 | 2026-03-09 | 调整为100分制，明确仓位分配，移除估算数据 |
 | v5.0 | 2026-03-09 | 移除stock-market-pro/stock-analysis依赖；技术面重构(SEPA40+RSI5+MACD5+量价5+筹码5=60)；Python calc_indicators.py替代大模型心算；整合stock-data v2.3.0 chip筹码分布；量化催化剂5项；新增美股数据降级规则 |
+| v5.1 | 2026-03-09 | 强制252根K线要求；细化数据完整性等级(A-F级)；大盘环境必须获取；ROE/现金流获取失败处理机制；所有子版块添加计算过程展示 |
 
 ---
 
