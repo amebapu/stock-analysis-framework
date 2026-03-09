@@ -2,15 +2,22 @@
 # -*- coding: utf-8 -*-
 """
 技术指标计算脚本 - calc_indicators.py
-版本: 1.1.0 (2026-03-09)
+版本: 1.2.0 (2026-03-10)
 
 功能: 从 stdin 读取 stock-data kline 的 JSON 输出，
-      精确计算 MA/RSI/MACD/SEPA/量价 等技术指标。
-      v1.1.0: 更新数据完整性评级为A-F六级
+      精确计算 MA/RSI/MACD/SEPA/量价/筹码 等技术指标。
+
+变更历史:
+  v1.0.0: 初始版本
+  v1.1.0: 更新数据完整性评级为A-F六级
+  v1.2.0: SEPA从6项改为5项（移除MA200走平）;
+          新增score_chip()筹码确定性打分;
+          新增calculate_score_mapping()分值映射;
+          main()输出有效满分/缺失项/置信等级/映射得分
 
 用法:
-  stock-data kline sh600519 day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
-  stock-data kline usAAPL day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
+  stock-data kline sh600519 day 252 qfq 2>/dev/null | python calc_indicators.py
+  stock-data kline usAAPL day 252 qfq 2>/dev/null | python calc_indicators.py
 
 依赖: 仅使用 Python 标准库（json/sys/math），无需 pip install
 """
@@ -223,139 +230,159 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
 
 
 # ============================================================
-# 3. SEPA 趋势模板检查 (6 项)
+# 3. SEPA 趋势模板检查 (5 项, v5.2)
 # ============================================================
 
 def check_sepa(closes, current_price):
     """
-    米勒维尼 SEPA 趋势模板 6 项检查。
+    米勒维尼 SEPA 趋势模板 5 项检查 (v5.2)。
 
-    检查项:
+    检查项（每项 8 分，共 40 分）:
       1. 股价 > MA50
-      2. MA50 > MA150
-      3. MA150 > MA200
-      4. MA200 至少走平或上升（对比 20 日前）
-      5. 股价 > MA200
-      6. 股价处于 52 周高点的 75% 以上
+      2. MA50 > MA150 > MA200（多头排列）
+      3. 股价 > MA200
+      4. 距 52 周高点 < 25%
+      5. 距 52 周低点 > 25%
 
-    返回 dict，含 items (每项详情) 和 passed_count。
+    v5.2 变更: 移除原第 4 项"MA200 走平或上升"（与多头排列共线性高）；
+              原"MA50>MA150"和"MA150>MA200"合并为一项"多头排列"；
+              新增"距 52 周低点 > 25%"作为独立检查项。
+
+    返回 dict，含 items (每项详情)、passed_count、score（0-40）。
     """
     items = []
     ma50 = calculate_ma(closes, 50)
     ma150 = calculate_ma(closes, 150)
     ma200 = calculate_ma(closes, 200)
+    score_per_item = 8  # 每项 8 分，5 项共 40 分
 
-    # 第 1 项: 股价 > MA50
+    # ----- 第 1 项: 股价 > MA50 -----
     if ma50 is not None:
         passed = current_price > ma50
         items.append({
             "name": "股价 > MA50",
             "passed": passed,
+            "applicable": True,
+            "score": score_per_item if passed else 0,
+            "max_score": score_per_item,
             "detail": f"股价={current_price:.2f}, MA50={ma50:.2f}",
         })
     else:
         items.append({
             "name": "股价 > MA50",
             "passed": None,
+            "applicable": False,
+            "score": 0,
+            "max_score": 0,  # 不可算 → 剔除分母
             "detail": f"N/A（需50根K线，当前{len(closes)}根）",
         })
 
-    # 第 2 项: MA50 > MA150
-    if ma50 is not None and ma150 is not None:
-        passed = ma50 > ma150
+    # ----- 第 2 项: MA50 > MA150 > MA200（多头排列）-----
+    if ma50 is not None and ma150 is not None and ma200 is not None:
+        passed = (ma50 > ma150) and (ma150 > ma200)
         items.append({
-            "name": "MA50 > MA150",
+            "name": "MA50 > MA150 > MA200（多头排列）",
             "passed": passed,
-            "detail": f"MA50={ma50:.2f}, MA150={ma150:.2f}",
+            "applicable": True,
+            "score": score_per_item if passed else 0,
+            "max_score": score_per_item,
+            "detail": f"MA50={ma50:.2f}, MA150={ma150:.2f}, MA200={ma200:.2f}",
         })
     else:
         items.append({
-            "name": "MA50 > MA150",
+            "name": "MA50 > MA150 > MA200（多头排列）",
             "passed": None,
-            "detail": "N/A（数据不足）",
+            "applicable": False,
+            "score": 0,
+            "max_score": 0,
+            "detail": f"N/A（需200根K线，当前{len(closes)}根）",
         })
 
-    # 第 3 项: MA150 > MA200
-    if ma150 is not None and ma200 is not None:
-        passed = ma150 > ma200
-        items.append({
-            "name": "MA150 > MA200",
-            "passed": passed,
-            "detail": f"MA150={ma150:.2f}, MA200={ma200:.2f}",
-        })
-    else:
-        items.append({
-            "name": "MA150 > MA200",
-            "passed": None,
-            "detail": "N/A（数据不足）",
-        })
-
-    # 第 4 项: MA200 走平或上升
-    if ma200 is not None and len(closes) >= 220:
-        ma200_20d_ago = calculate_ma(closes[:-20], 200)
-        if ma200_20d_ago is not None:
-            passed = ma200 >= ma200_20d_ago
-            items.append({
-                "name": "MA200 走平或上升",
-                "passed": passed,
-                "detail": f"当前MA200={ma200:.2f}, 20日前MA200={ma200_20d_ago:.2f}",
-            })
-        else:
-            items.append({
-                "name": "MA200 走平或上升",
-                "passed": None,
-                "detail": "N/A（数据不足以对比20日前）",
-            })
-    else:
-        items.append({
-            "name": "MA200 走平或上升",
-            "passed": None,
-            "detail": f"N/A（需220根K线，当前{len(closes)}根）",
-        })
-
-    # 第 5 项: 股价 > MA200
+    # ----- 第 3 项: 股价 > MA200 -----
     if ma200 is not None:
         passed = current_price > ma200
         items.append({
             "name": "股价 > MA200",
             "passed": passed,
+            "applicable": True,
+            "score": score_per_item if passed else 0,
+            "max_score": score_per_item,
             "detail": f"股价={current_price:.2f}, MA200={ma200:.2f}",
         })
     else:
         items.append({
             "name": "股价 > MA200",
             "passed": None,
+            "applicable": False,
+            "score": 0,
+            "max_score": 0,
             "detail": f"N/A（需200根K线，当前{len(closes)}根）",
         })
 
-    # 第 6 项: 股价 >= 52 周高点的 75%
-    if len(closes) >= 50:
-        # 取最近 250 个交易日（约 52 周），不足则用全部
-        period_data = closes[-250:] if len(closes) >= 250 else closes
-        high_52w = max(period_data)
-        threshold = high_52w * 0.75
-        passed = current_price >= threshold
+    # ----- 计算 52 周高低点 -----
+    period_data = closes[-252:] if len(closes) >= 252 else closes
+    high_52w = max(period_data) if period_data else None
+    low_52w = min(period_data) if period_data else None
+
+    # ----- 第 4 项: 距 52 周高点 < 25% -----
+    if high_52w is not None and high_52w > 0 and len(closes) >= 50:
+        pct_from_high = (high_52w - current_price) / high_52w * 100
+        passed = pct_from_high < 25
         items.append({
-            "name": "股价 >= 52周高点的75%",
+            "name": "距52周高点 < 25%",
             "passed": passed,
-            "detail": f"股价={current_price:.2f}, 52周高={high_52w:.2f}, 75%线={threshold:.2f}",
+            "applicable": True,
+            "score": score_per_item if passed else 0,
+            "max_score": score_per_item,
+            "detail": f"距高点{pct_from_high:.1f}%, 52周高={high_52w:.2f}",
         })
     else:
         items.append({
-            "name": "股价 >= 52周高点的75%",
+            "name": "距52周高点 < 25%",
             "passed": None,
+            "applicable": False,
+            "score": 0,
+            "max_score": 0,
             "detail": f"N/A（需至少50根K线，当前{len(closes)}根）",
         })
 
-    # 统计
-    passed_count = sum(1 for item in items if item["passed"] is True)
-    total_valid = sum(1 for item in items if item["passed"] is not None)
+    # ----- 第 5 项: 距 52 周低点 > 25% -----
+    if low_52w is not None and low_52w > 0 and len(closes) >= 50:
+        pct_from_low = (current_price - low_52w) / low_52w * 100
+        passed = pct_from_low > 25
+        items.append({
+            "name": "距52周低点 > 25%",
+            "passed": passed,
+            "applicable": True,
+            "score": score_per_item if passed else 0,
+            "max_score": score_per_item,
+            "detail": f"距低点{pct_from_low:.1f}%, 52周低={low_52w:.2f}",
+        })
+    else:
+        items.append({
+            "name": "距52周低点 > 25%",
+            "passed": None,
+            "applicable": False,
+            "score": 0,
+            "max_score": 0,
+            "detail": f"N/A（需至少50根K线，当前{len(closes)}根）",
+        })
+
+    # ----- 统计 -----
+    passed_count = sum(1 for it in items if it["passed"] is True)
+    total_valid = sum(1 for it in items if it["applicable"])
+    raw_score = sum(it["score"] for it in items)
+    effective_max = sum(it["max_score"] for it in items)
+    missing_items = [it["name"] for it in items if not it["applicable"]]
 
     return {
         "items": items,
         "passed_count": passed_count,
         "total_valid": total_valid,
         "total": len(items),
+        "raw_score": raw_score,
+        "effective_max": effective_max,
+        "missing_items": missing_items,
     }
 
 
@@ -432,13 +459,208 @@ def analyze_volume(kline_data):
 
 
 # ============================================================
-# 5. 数据完整性评级
+# 5. 筹码确定性打分 (v5.2 新增)
 # ============================================================
+
+def score_chip(chip_data, market="A"):
+    """
+    对 stock-data chip 返回的筹码数据做确定性打分。
+
+    参数:
+      chip_data - dict，来自 stock-data chip 的解析结果，
+                  至少应包含以下字段:
+                    profitPercent (获利比例, 0-100)
+                    avgCost       (平均成本)
+                    p70           (70%筹码集中价位区间宽度占比, 0-100)
+                    p90           (90%筹码集中价位区间宽度占比, 0-100, 可选)
+                    currentPrice  (当前价格, 用于与avgCost对比)
+      market    - 市场类型: "A"(A股) / "HK"(港股) / "US"(美股)
+
+    返回 dict:
+      raw_score    - 原始得分
+      effective_max - 有效满分（A股5分, 港美股3分）
+      items        - 各子项详情
+      missing      - 缺失项列表
+      applicable   - 是否可用
+
+    设计原则:
+      - 港美股机构占比高，筹码理论有效性降低，满分降权为3分
+      - 每个子项都有确定性规则，不依赖主观解释
+      - 缺失字段 → 该子项不参与评分，分母同步剔除
+    """
+    # 满分基础
+    full_score = 5 if market == "A" else 3
+    # 子项权重：获利比例(40%), 筹码集中度(40%), 股价>平均成本(20%)
+    w_profit = 0.4
+    w_concentration = 0.4
+    w_above_cost = 0.2
+
+    items = []
+    missing = []
+    total_weight = 0.0
+    weighted_score = 0.0
+
+    if chip_data is None:
+        return {
+            "raw_score": 0,
+            "effective_max": 0,
+            "items": [],
+            "missing": ["筹码数据（chip_data 为空）"],
+            "applicable": False,
+        }
+
+    # ----- 子项1: 获利比例 -----
+    profit_pct = chip_data.get("profitPercent")
+    if profit_pct is not None:
+        try:
+            profit_pct = float(profit_pct)
+            total_weight += w_profit
+            if profit_pct >= 60:
+                s = 1.0
+            elif profit_pct >= 40:
+                s = 0.5
+            else:
+                s = 0.0
+            weighted_score += w_profit * s
+            items.append({
+                "name": "获利比例",
+                "value": f"{profit_pct:.1f}%",
+                "score_ratio": s,
+                "detail": "≥60%满分, 40-60%半分, <40%零分",
+            })
+        except (ValueError, TypeError):
+            missing.append("获利比例（解析失败）")
+    else:
+        missing.append("获利比例")
+
+    # ----- 子项2: 70%筹码集中度 -----
+    p70 = chip_data.get("p70")
+    if p70 is not None:
+        try:
+            p70 = float(p70)
+            total_weight += w_concentration
+            if p70 < 15:
+                s = 1.0
+            elif p70 < 25:
+                s = 0.5
+            else:
+                s = 0.0
+            weighted_score += w_concentration * s
+            items.append({
+                "name": "70%筹码集中度",
+                "value": f"{p70:.1f}%",
+                "score_ratio": s,
+                "detail": "<15%满分, 15-25%半分, ≥25%零分",
+            })
+        except (ValueError, TypeError):
+            missing.append("70%筹码集中度（解析失败）")
+    else:
+        missing.append("70%筹码集中度")
+
+    # ----- 子项3: 股价 > 平均成本 -----
+    avg_cost = chip_data.get("avgCost")
+    cur_price = chip_data.get("currentPrice")
+    if avg_cost is not None and cur_price is not None:
+        try:
+            avg_cost = float(avg_cost)
+            cur_price = float(cur_price)
+            total_weight += w_above_cost
+            s = 1.0 if cur_price > avg_cost else 0.0
+            weighted_score += w_above_cost * s
+            items.append({
+                "name": "股价 > 平均成本",
+                "value": f"价格={cur_price:.2f}, avgCost={avg_cost:.2f}",
+                "score_ratio": s,
+                "detail": "股价>平均成本满分, 否则零分",
+            })
+        except (ValueError, TypeError):
+            missing.append("股价>平均成本（解析失败）")
+    else:
+        missing.append("股价>平均成本（缺字段）")
+
+    # ----- 汇总 -----
+    if total_weight > 0:
+        raw_score = round(full_score * (weighted_score / total_weight), 1)
+        effective_max = round(full_score * (total_weight / 1.0), 1)
+    else:
+        raw_score = 0
+        effective_max = 0
+
+    return {
+        "raw_score": raw_score,
+        "effective_max": effective_max,
+        "items": items,
+        "missing": missing,
+        "applicable": total_weight > 0,
+    }
+
+
+# ============================================================
+# 5b. 分值映射与置信等级 (v5.2 新增)
+# ============================================================
+
+def calculate_score_mapping(raw_score, effective_max):
+    """
+    将原始得分映射到 100 分制。
+
+    公式: mapped = raw_score / effective_max × 100
+    当 effective_max == 0 时返回 None（无法评分）。
+
+    返回 dict:
+      mapped_score  - 映射后得分（保留1位小数）
+      raw_score     - 原始得分
+      effective_max - 有效满分
+      coverage_pct  - 分母覆盖率 (effective_max / 100 × 100%)
+    """
+    if effective_max <= 0:
+        return {
+            "mapped_score": None,
+            "raw_score": raw_score,
+            "effective_max": effective_max,
+            "coverage_pct": 0.0,
+        }
+    mapped = round(raw_score / effective_max * 100, 1)
+    coverage = round(effective_max / 100.0 * 100, 1)
+    return {
+        "mapped_score": mapped,
+        "raw_score": raw_score,
+        "effective_max": effective_max,
+        "coverage_pct": coverage,
+    }
+
+
+def determine_confidence(data_completeness_level, coverage_pct):
+    """
+    联合 K 线完整性等级与分母覆盖率，判定置信等级。
+
+    置信等级:
+      高   - A/A- 且覆盖率 ≥ 90%
+      中   - B 且覆盖率 ≥ 80%，或 A/A- 且覆盖率 70-89%
+      低   - C/D 或覆盖率 60-79%
+      极低 - E/F 或覆盖率 < 60%
+
+    返回 str: "高" / "中" / "低" / "极低"
+    """
+    top_levels = {"A", "A-"}
+    mid_levels = {"B"}
+
+    if data_completeness_level in top_levels and coverage_pct >= 90:
+        return "高"
+    elif (data_completeness_level in mid_levels and coverage_pct >= 80) or \
+         (data_completeness_level in top_levels and coverage_pct >= 70):
+        return "中"
+    elif coverage_pct >= 60:
+        return "低"
+    else:
+        return "极低"
+
+
+
 
 def assess_data_completeness(kline_count):
     """
-    评估数据完整性等级，用于美股降级规则。
-    v5.1更新: 使用A-F六级分类，与SKILL.md保持一致
+    评估数据完整性等级，用于降级规则。
+    v5.1: A-F六级分类; v5.2: 移除 score_cap 限制（改用分母剔除映射）
 
     返回: dict，含 level (A/B/C/D/E/F)、description、score_cap
     """
@@ -493,13 +715,20 @@ def assess_data_completeness(kline_count):
 
 
 # ============================================================
-# 6. 主函数
+# 7. 主函数
 # ============================================================
 
 def main():
     """
-    入口: 从 stdin 读取 JSON → 解析 K 线 → 计算所有指标 → 输出
+    入口: 从 stdin 读取 JSON → 解析 K 线 → 计算所有指标 → 输出。
+    v5.2: 新增有效满分/缺失项/置信等级/100分映射得分输出。
     """
+    # Windows 终端 UTF-8 兼容
+    import io
+    if hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    if hasattr(sys.stderr, 'buffer'):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
     # 读取 stdin
     try:
         raw_text = sys.stdin.read()
@@ -534,9 +763,74 @@ def main():
     sepa = check_sepa(closes, current_price)
     volume_analysis = analyze_volume(kline_data)
 
-    # 格式化输出
+    # ========== 技术面评分汇总 ==========
+    # 收集所有技术面子项的得分和满分
+    all_missing = []  # 所有缺失项
+    tech_raw = 0
+    tech_max = 0
+
+    # --- SEPA (40分) ---
+    tech_raw += sepa["raw_score"]
+    tech_max += sepa["effective_max"]
+    all_missing.extend(sepa["missing_items"])
+
+    # --- RSI (5分) ---
+    if rsi is not None:
+        rsi_max = 5
+        if 40 <= rsi <= 70:
+            rsi_score = 5
+        elif (30 <= rsi < 40) or (70 < rsi <= 80):
+            rsi_score = 3
+        else:
+            rsi_score = 0
+        tech_raw += rsi_score
+        tech_max += rsi_max
+    else:
+        all_missing.append(f"RSI（需15根K线，当前{kline_count}根）")
+
+    # --- MACD (5分) ---
+    if macd is not None:
+        macd_max = 5
+        if macd["dif"] > macd["dea"] and macd["histogram"] > 0:
+            macd_score = 5
+        elif macd["dif"] > macd["dea"] or macd["histogram"] > 0:
+            macd_score = 3
+        else:
+            macd_score = 0
+        tech_raw += macd_score
+        tech_max += macd_max
+    else:
+        all_missing.append(f"MACD（需35根K线，当前{kline_count}根）")
+
+    # --- 量价 (5分) ---
+    if "error" not in volume_analysis:
+        va = volume_analysis
+        vol_raw = 0
+        vol_max = 5
+        # 涨跌日量比（3分）
+        if va["up_down_ratio"] > 1.3:
+            vol_raw += 3
+        elif va["up_down_ratio"] > 1.0:
+            vol_raw += 1
+        # 量比（2分）
+        if 0.8 <= va["volume_ratio"] <= 1.5:
+            vol_raw += 2
+        elif 0.5 <= va["volume_ratio"] <= 2.0:
+            vol_raw += 1
+        tech_raw += vol_raw
+        tech_max += vol_max
+    else:
+        all_missing.append("量价分析（K线不足）")
+
+    # --- 筹码 (5分A股/3分港美股) ---
+    # 筹码数据不在 kline 管道中，此处只输出占位，
+    # 实际筹码分数由外部调用 score_chip() 获取后手动合并。
+    # main() 里标记筹码为"待外部输入"
+    chip_note = "筹码评分需单独调用 score_chip()，此处不包含"
+
+    # ========== 格式化输出 ==========
     print("=" * 60)
-    print("技术指标计算结果")
+    print(f"技术指标计算结果 (calc_indicators v1.2.0)")
     print(f"日期: {latest_date}  |  收盘价: {current_price:.2f}")
     print(f"K线数量: {kline_count}  |  数据完整性: {completeness['level']}级")
     print("=" * 60)
@@ -559,6 +853,7 @@ def main():
         else:
             rsi_signal = "偏弱"
         print(f"  RSI: {rsi}  —  {rsi_signal}")
+        print(f"  评分: {rsi_score}/{rsi_max}分")
     else:
         print(f"  RSI: N/A（需15根K线，当前{kline_count}根）")
 
@@ -569,15 +864,23 @@ def main():
         print(f"  DEA:  {macd['dea']}")
         print(f"  柱状图: {macd['histogram']}")
         print(f"  信号: {macd['signal_text']}")
+        print(f"  评分: {macd_score}/{macd_max}分")
     else:
         print(f"  MACD: N/A（需35根K线，当前{kline_count}根）")
 
     # --- SEPA ---
-    print("\n【SEPA趋势模板检查】")
+    print("\n【SEPA趋势模板检查 (5项, v5.2)】")
     print(f"  通过: {sepa['passed_count']}/{sepa['total_valid']}（有效项）, 共{sepa['total']}项")
+    print(f"  SEPA得分: {sepa['raw_score']}/{sepa['effective_max']}分")
     for item in sepa["items"]:
-        status = "✅" if item["passed"] is True else ("❌" if item["passed"] is False else "⚠️")
-        print(f"  {status} {item['name']}: {item['detail']}")
+        if item["passed"] is True:
+            status = "✅"
+        elif item["passed"] is False:
+            status = "❌"
+        else:
+            status = "⚠️"
+        score_str = f" [{item['score']}/{item['max_score']}分]" if item["applicable"] else " [剔除]"
+        print(f"  {status} {item['name']}: {item['detail']}{score_str}")
 
     # --- 量价 ---
     print("\n【量价分析】")
@@ -591,13 +894,40 @@ def main():
         print(f"  涨日数/跌日数: {va['up_days']}/{va['down_days']}")
         print(f"  涨日均量/跌日均量: {va['avg_up_volume']:.0f}/{va['avg_down_volume']:.0f} (比值: {va['up_down_ratio']:.2f})")
         print(f"  量价质量: {va['vol_quality']}")
+        print(f"  评分: {vol_raw}/{vol_max}分")
+
+    # --- 筹码占位 ---
+    print(f"\n【筹码结构】")
+    print(f"  {chip_note}")
+    print(f"  使用方法: 将 stock-data chip 的 JSON 传入 score_chip(data, market)")
 
     # --- 数据完整性 ---
     print(f"\n【数据完整性】")
     print(f"  等级: {completeness['level']}级 — {completeness['description']}")
-    print(f"  技术面评分上限: {completeness['score_cap']}分")
+    print(f"  技术面评分上限(参考): {completeness['score_cap']}分")
 
-    print("\n" + "=" * 60)
+    # --- v5.2: 技术面汇总（不含筹码） ---
+    mapping = calculate_score_mapping(tech_raw, tech_max)
+    confidence = determine_confidence(completeness["level"], mapping["coverage_pct"])
+
+    print(f"\n{'=' * 60}")
+    print(f"【技术面评分汇总 (不含筹码)】")
+    print(f"  原始得分: {tech_raw} / 有效满分: {tech_max}")
+    if mapping["mapped_score"] is not None:
+        print(f"  映射得分: {mapping['mapped_score']}分 (映射到100分制)")
+    else:
+        print(f"  映射得分: 无法计算（有效满分为0）")
+    print(f"  分母覆盖率: {mapping['coverage_pct']:.1f}%")
+    print(f"  置信等级: {confidence}")
+
+    if all_missing:
+        print(f"\n【缺失项】({len(all_missing)}项)")
+        for m in all_missing:
+            print(f"  ⚠️ {m}")
+    else:
+        print(f"\n【缺失项】无")
+
+    print(f"\n{'=' * 60}")
 
 
 if __name__ == "__main__":
