@@ -17,7 +17,7 @@ last_updated: "2026-03-10T1200"
 > **设计目的**: 对博主推荐标的进行独立第三方验证，辅助建仓决策  
 > **仓位上限**: 单标的最高20%  
 > **数据源**: stock-data v2.3.0（唯一数据源，腾讯自选股）  
-> **计算层**: Python calc_indicators.py v1.2.0（确定性计算，零幻觉）  
+> **计算层**: Python calc_indicators.py v1.3.0（确定性计算，零幻觉）  
 > **强制要求**: 252根K线优先 / 缺项映射 / 大盘环境必查 / 有效满分+置信等级输出
 
 ---
@@ -386,6 +386,8 @@ stock-data finance SNDK.OQ income 4
 - v5.2: 输出有效满分、缺失项列表、置信等级和映射得分
 
 **使用方法**：
+
+#### Linux/macOS
 ```bash
 # A股 - 252日前复权K线（满足所有指标计算需求）
 stock-data kline sh600519 day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
@@ -400,6 +402,26 @@ stock-data kline hk00700 day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python cal
 stock-data kline usSPY day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 ```
 
+#### Windows PowerShell（v1.3.0 起无需 sed）
+```powershell
+# 脚本自动过滤 [HTTP] 日志行，无需 sed 和 2>/dev/null
+stock-data kline sh600519 day 252 qfq | python calc_indicators.py
+
+# 美股含筹码评分
+stock-data chip usSNDK > sndk_chip.json
+stock-data kline usSNDK day 252 qfq | python calc_indicators.py --chip sndk_chip.json --market US
+
+# 港股含筹码评分
+stock-data chip hk00700 > hk700_chip.json
+stock-data kline hk00700 day 252 qfq | python calc_indicators.py --chip hk700_chip.json --market HK
+```
+
+#### 命令行参数
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--chip` | 筹码JSON文件路径（stock-data chip 输出） | 无（不含筹码） |
+| `--market` | 市场类型: A/HK/US | A |
+
 ### 5.2 技术指标计算公式与K线需求
 
 | 指标 | 公式 | 最少所需K线 | 说明 |
@@ -409,7 +431,7 @@ stock-data kline usSPY day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_
 | MA200 | SMA = Σ(最近200个收盘价) / 200 | **200根** | 长期趋势 |
 | RSI(14) | Wilder平滑法 | **15根** | 相对强弱 |
 | MACD(12,26,9) | EMA(12)-EMA(26), DEA=EMA(DIF,9) | **35根** | 趋势动量 |
-| 52周高低点 | max/min(highs/lows) | **252根** | 一年区间 |
+| 52周高低点 | max(highs)/min(lows) | **252根** | 一年区间(v1.3.0改用high/low) |
 
 **关键结论**：
 - **最佳调用**: `stock-data kline <code> day 252 qfq`（满足所有指标）
@@ -422,6 +444,8 @@ stock-data kline usSPY day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_
 ## 六、完整分析流程
 
 ### 步骤1：大盘环境检查（必须执行，不跳过）
+
+#### Linux/macOS
 ```bash
 # 标普500趋势（MA50/MA200 判断）- 美股
 stock-data kline usSPY day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
@@ -436,6 +460,15 @@ stock-data kline hkHSI day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_
 stock-data quote usVIX
 ```
 
+#### Windows PowerShell
+```powershell
+# v1.3.0 起自动过滤 HTTP 日志，无需 sed
+stock-data kline usSPY day 252 qfq | python calc_indicators.py
+stock-data kline sh000001 day 252 qfq | python calc_indicators.py
+stock-data kline hkHSI day 252 qfq | python calc_indicators.py
+stock-data quote usVIX
+```
+
 **大盘环境输出要求**：
 ```
 大盘环境: [良好/一般/偏弱/差]
@@ -446,6 +479,9 @@ stock-data quote usVIX
 ```
 
 ### 步骤2：个股数据获取
+
+> **Windows 用户提示**: 以下 `2>/dev/null | sed ...` 仅 Linux/macOS 需要。Windows PowerShell 直接管道即可（v1.3.0 自动过滤 HTTP 日志）。
+
 ```bash
 # 1. 实时价格
 stock-data quote <code>
@@ -454,8 +490,10 @@ stock-data quote <code>
 # ⚠️ 必须调用252根K线以满足52周高低点+MA200趋势判断
 stock-data kline <code> day 252 qfq 2>/dev/null | sed '/^\[HTTP/d' | python calc_indicators.py
 
-# 3. 筹码分布
+# 3. 筹码分布（可保存为JSON，用 --chip 参数自动合并到技术面评分）
 stock-data chip <code>
+# 含筹码的完整技术面: stock-data chip <code> > chip.json
+#   然后: stock-data kline <code> day 252 qfq | python calc_indicators.py --chip chip.json --market US
 
 # 4. 财务数据（最近4期）
 stock-data finance <code> income 4        # 美股
@@ -598,7 +636,7 @@ stock-data hkfund <code> day 20           # 港股
 ═══════════════════════════════════════════════════
 - 价格/K线数据: stock-data v2.3.0 (腾讯自选股), [日期]
 - 财务数据: stock-data finance 接口
-- 技术指标(MA/RSI/MACD/SEPA/量价): Python calc_indicators.py v1.2.0 精确计算
+- 技术指标(MA/RSI/MACD/SEPA/量价): Python calc_indicators.py v1.3.0 精确计算
 - 筹码分布: stock-data chip 接口 + score_chip() 确定性打分
 - 新闻/评级/资金: stock-data news/rating/report/asfund/hkfund 接口
 
@@ -722,6 +760,7 @@ K线完整性 = [取决于实际K线数量]
 | v5.0 | 2026-03-09 | 移除stock-market-pro/stock-analysis依赖；技术面重构(SEPA40+RSI5+MACD5+量价5+筹码5=60)；Python calc_indicators.py替代大模型心算；整合stock-data v2.3.0 chip筹码分布；量化催化剂5项；新增美股数据降级规则 |
 | v5.1 | 2026-03-09 | 强制252根K线要求；细化数据完整性等级(A-F级)；大盘环境必须获取；ROE/现金流获取失败处理机制；所有子版块添加计算过程展示 |
 | v5.2 | 2026-03-10 | SEPA改为5项(移除MA200走平,每项8分);新增score_chip()确定性筹码打分;缺项映射(分子分母同时剔除→100分映射);报告输出有效满分/缺失项/置信等级;修正ROE/现金流分市场链路(A股summary/港股自算/美股自算或N/A);明确美股cashflow已知限制;港美股筹码降权3分 |
+| v5.2.1 | 2026-03-10 | calc_indicators v1.3.0: [Bug1]coverage_pct按维度理论满分计算(非写死100); [Bug2]52周高低点改用high/low; [Bug3]新增--chip/--market参数自动合并筹码; [Bug4]Windows兼容(自动过滤HTTP日志); [Bug5]MACD评分补全3分档(signal_text映射); [Bug7]移除废弃score_cap字段 |
 
 ---
 

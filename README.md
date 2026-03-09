@@ -35,7 +35,7 @@ cd stock-analysis-framework
 
 ## 使用方法
 
-### 基本分析流程
+### 基本分析流程（Linux/macOS）
 
 ```bash
 # 1. 大盘环境（必须获取）
@@ -57,6 +57,29 @@ stock-data news usTSLA 1 10 2
 # 6. 获取机构研报
 stock-data report usTSLA 1 10 1
 ```
+
+### Windows PowerShell 用法
+
+> v1.3.0 起，`calc_indicators.py` 内置 HTTP 日志过滤，Windows 无需 `sed` 和 `2>/dev/null`。
+
+```powershell
+# 1. 大盘环境
+stock-data kline usSPY day 252 qfq | python calc_indicators.py
+
+# 2. 个股技术面（不含筹码）
+stock-data kline usTSLA day 252 qfq | python calc_indicators.py
+
+# 3. 含筹码评分的完整技术面（先保存筹码数据，再管道合并）
+stock-data chip usSNDK > sndk_chip.json
+stock-data kline usSNDK day 252 qfq | python calc_indicators.py --chip sndk_chip.json --market US
+```
+
+### 命令行参数
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `--chip` | 筹码JSON文件路径（stock-data chip 输出） | `--chip sndk_chip.json` |
+| `--market` | 市场类型: A(A股)/HK(港股)/US(美股)，默认A | `--market US` |
 
 ### 美股代码格式对照表
 
@@ -146,6 +169,7 @@ stock-data report usTSLA 1 10 1
 | v5.0 | 2026-03-09 | 初始发布，100分制评分体系 |
 | v5.1 | 2026-03-09 | 强制252根K线/大盘必查/ROE现金流处理/计算过程展示 |
 | v5.2 | 2026-03-10 | SEPA改为5项(移除MA200走平,每项8分);新增确定性筹码打分score_chip();缺项映射(分子分母同时剔除→100分映射);报告输出有效满分/缺失项/置信等级;修正ROE/现金流跨市场链路;港美股筹码降权3分 |
+| v5.2.1 | 2026-03-10 | calc_indicators v1.3.0: 修复coverage_pct分母写死100;52周高低点改用high/low;MACD评分补全3分档;新增--chip/--market参数;Windows兼容(自动过滤HTTP日志);移除废弃score_cap |
 
 ## 免责声明
 

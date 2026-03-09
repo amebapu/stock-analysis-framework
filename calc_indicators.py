@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 技术指标计算脚本 - calc_indicators.py
-版本: 1.2.0 (2026-03-10)
+版本: 1.3.0 (2026-03-10)
 
 功能: 从 stdin 读取 stock-data kline 的 JSON 输出，
       精确计算 MA/RSI/MACD/SEPA/量价/筹码 等技术指标。
@@ -14,12 +14,24 @@
           新增score_chip()筹码确定性打分;
           新增calculate_score_mapping()分值映射;
           main()输出有效满分/缺失项/置信等级/映射得分
+  v1.3.0: [Bug1] coverage_pct 新增 theoretical_max 参数，按维度满分计算;
+          [Bug2] 52周高低点改用 high/low（非收盘价）;
+          [Bug3] main()支持 --chip/--market 参数自动合并筹码;
+          [Bug4] parse_kline_json 自动过滤 [HTTP] 日志行(Windows兼容);
+          [Bug5] MACD评分改用 signal_text 映射(补全3分档);
+          [Bug7] assess_data_completeness 移除废弃的 score_cap 字段
 
 用法:
+  # Linux/macOS
   stock-data kline sh600519 day 252 qfq 2>/dev/null | python calc_indicators.py
-  stock-data kline usAAPL day 252 qfq 2>/dev/null | python calc_indicators.py
 
-依赖: 仅使用 Python 标准库（json/sys/math），无需 pip install
+  # Windows PowerShell（无需 sed，脚本自动过滤 HTTP 日志）
+  stock-data kline sh600519 day 252 qfq | python calc_indicators.py
+
+  # 含筹码评分
+  stock-data kline usSNDK day 252 qfq | python calc_indicators.py --chip sndk_chip.json --market US
+
+依赖: 仅使用 Python 标准库（json/sys/math/argparse），无需 pip install
 """
 
 import json
@@ -39,14 +51,26 @@ def parse_kline_json(raw_text):
       - v2.2.2+ (nodes): data.nodes 数组，每个节点含 date/open/last/high/low/volume/amount/exchange
       - v2.2.1  (array): data.<code>.<period> 二维数组 [日期, 开盘, 收盘, 最高, 最低, 成交量]
 
+    v1.3.0: 自动过滤 stock-data 的 [HTTP ...] 调试日志行，
+            Windows PowerShell 无需 2>/dev/null 和 sed 过滤。
+
     返回: list[dict]，按日期从旧到新排序，每个 dict 包含:
           date, open, close, high, low, volume, amount
     """
+    # 自动过滤 stock-data 的 HTTP 调试日志（[HTTP ...] 开头的行）
+    lines = raw_text.splitlines()
+    clean_lines = [l for l in lines if not l.strip().startswith('[HTTP')]
+    clean_text = '\n'.join(clean_lines)
+
     try:
-        obj = json.loads(raw_text)
-    except json.JSONDecodeError as e:
-        print(f"[错误] JSON 解析失败: {e}", file=sys.stderr)
-        return []
+        obj = json.loads(clean_text)
+    except json.JSONDecodeError:
+        # 清理后解析失败，再尝试原始文本（可能没有日志行）
+        try:
+            obj = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            print(f"[错误] JSON 解析失败: {e}", file=sys.stderr)
+            return []
 
     # 检查返回码
     if obj.get("code", 0) != 0:
@@ -233,7 +257,7 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
 # 3. SEPA 趋势模板检查 (5 项, v5.2)
 # ============================================================
 
-def check_sepa(closes, current_price):
+def check_sepa(kline_data_or_closes, current_price):
     """
     米勒维尼 SEPA 趋势模板 5 项检查 (v5.2)。
 
@@ -248,8 +272,21 @@ def check_sepa(closes, current_price):
               原"MA50>MA150"和"MA150>MA200"合并为一项"多头排列"；
               新增"距 52 周低点 > 25%"作为独立检查项。
 
+    v1.3.0 修正: 52周高低点改用 high/low 计算（之前误用 closes）。
+                 兼容传入 kline_data (list[dict]) 或 closes (list[float])。
+
     返回 dict，含 items (每项详情)、passed_count、score（0-40）。
     """
+    # 兼容两种传参：kline_data (list[dict]) 或 closes (list[float])
+    if kline_data_or_closes and isinstance(kline_data_or_closes[0], dict):
+        closes = [d["close"] for d in kline_data_or_closes]
+        highs = [d["high"] for d in kline_data_or_closes]
+        lows = [d["low"] for d in kline_data_or_closes]
+    else:
+        closes = kline_data_or_closes
+        highs = closes  # 降级：仅有 closes 时退回旧行为
+        lows = closes
+
     items = []
     ma50 = calculate_ma(closes, 50)
     ma150 = calculate_ma(closes, 150)
@@ -319,10 +356,11 @@ def check_sepa(closes, current_price):
             "detail": f"N/A（需200根K线，当前{len(closes)}根）",
         })
 
-    # ----- 计算 52 周高低点 -----
-    period_data = closes[-252:] if len(closes) >= 252 else closes
-    high_52w = max(period_data) if period_data else None
-    low_52w = min(period_data) if period_data else None
+    # ----- 计算 52 周高低点（使用最高价/最低价，非收盘价） -----
+    period_highs = highs[-252:] if len(highs) >= 252 else highs
+    period_lows = lows[-252:] if len(lows) >= 252 else lows
+    high_52w = max(period_highs) if period_highs else None
+    low_52w = min(period_lows) if period_lows else None
 
     # ----- 第 4 项: 距 52 周高点 < 25% -----
     if high_52w is not None and high_52w > 0 and len(closes) >= 50:
@@ -599,32 +637,44 @@ def score_chip(chip_data, market="A"):
 # 5b. 分值映射与置信等级 (v5.2 新增)
 # ============================================================
 
-def calculate_score_mapping(raw_score, effective_max):
+def calculate_score_mapping(raw_score, effective_max, theoretical_max=None):
     """
     将原始得分映射到 100 分制。
 
     公式: mapped = raw_score / effective_max × 100
     当 effective_max == 0 时返回 None（无法评分）。
 
+    参数:
+      raw_score       - 实际得分
+      effective_max   - 有效满分（剔除缺失项后）
+      theoretical_max - 当前维度理论满分（如技术面不含筹码=55, 全框架=100）
+                        不传时默认 = effective_max（覆盖率100%）
+
     返回 dict:
-      mapped_score  - 映射后得分（保留1位小数）
-      raw_score     - 原始得分
-      effective_max - 有效满分
-      coverage_pct  - 分母覆盖率 (effective_max / 100 × 100%)
+      mapped_score    - 映射后得分（保留1位小数）
+      raw_score       - 原始得分
+      effective_max   - 有效满分
+      theoretical_max - 理论满分
+      coverage_pct    - 分母覆盖率 (effective_max / theoretical_max × 100%)
     """
+    if theoretical_max is None or theoretical_max <= 0:
+        theoretical_max = effective_max  # 兜底：覆盖率100%
+
     if effective_max <= 0:
         return {
             "mapped_score": None,
             "raw_score": raw_score,
             "effective_max": effective_max,
+            "theoretical_max": theoretical_max,
             "coverage_pct": 0.0,
         }
     mapped = round(raw_score / effective_max * 100, 1)
-    coverage = round(effective_max / 100.0 * 100, 1)
+    coverage = round(effective_max / theoretical_max * 100, 1)
     return {
         "mapped_score": mapped,
         "raw_score": raw_score,
         "effective_max": effective_max,
+        "theoretical_max": theoretical_max,
         "coverage_pct": coverage,
     }
 
@@ -661,56 +711,49 @@ def assess_data_completeness(kline_count):
     """
     评估数据完整性等级，用于降级规则。
     v5.1: A-F六级分类; v5.2: 移除 score_cap 限制（改用分母剔除映射）
+    v1.3.0: 移除废弃的 score_cap 字段
 
-    返回: dict，含 level (A/B/C/D/E/F)、description、score_cap
+    返回: dict，含 level (A/B/C/D/E/F)、description
     """
     if kline_count >= 252:
         return {
             "level": "A",
             "description": f"数据完整（{kline_count}根K线，满足所有指标）",
-            "score_cap": 60,
         }
     elif kline_count >= 220:
         return {
             "level": "A-",
             "description": f"数据基本完整（{kline_count}根K线，52周高低点可能不完整）",
-            "score_cap": 58,
         }
     elif kline_count >= 200:
         return {
             "level": "B",
             "description": f"数据部分不足（{kline_count}根K线，MA200趋势判断不可用）",
-            "score_cap": 55,
         }
     elif kline_count >= 50:
         return {
             "level": "C",
             "description": f"数据不足（{kline_count}根K线，MA200不可用）",
-            "score_cap": 45,
         }
     elif kline_count >= 35:
         return {
             "level": "D",
             "description": f"数据严重不足（{kline_count}根K线，仅RSI可用）",
-            "score_cap": 30,
         }
     elif kline_count >= 15:
         return {
             "level": "E",
             "description": f"数据极度不足（{kline_count}根K线，仅RSI可用）",
-            "score_cap": 15,
         }
     elif kline_count > 2:
         return {
             "level": "F",
             "description": f"数据近乎无效（{kline_count}根K线，MA/RSI/MACD全部不可用）",
-            "score_cap": 5,
         }
     else:
         return {
             "level": "F",
             "description": f"数据无效（{kline_count}根K线），技术面不可用",
-            "score_cap": 0,
         }
 
 
@@ -722,7 +765,22 @@ def main():
     """
     入口: 从 stdin 读取 JSON → 解析 K 线 → 计算所有指标 → 输出。
     v5.2: 新增有效满分/缺失项/置信等级/100分映射得分输出。
+    v1.3.0: 支持 --chip 参数自动合并筹码分数;
+            支持 --market 指定市场(A/HK/US);
+            check_sepa 传入 kline_data 以使用 high/low;
+            coverage_pct 按技术面理论满分计算(非写死100)。
     """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="米勒维尼技术指标计算脚本 v1.3.0",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument('--chip', help='筹码JSON文件路径（stock-data chip 输出）')
+    parser.add_argument('--market', default='A', choices=['A', 'HK', 'US'],
+                        help='市场类型: A(A股)/HK(港股)/US(美股), 默认A')
+    args = parser.parse_args()
+
     # Windows 终端 UTF-8 兼容
     import io
     if hasattr(sys.stdout, 'buffer'):
@@ -760,7 +818,7 @@ def main():
     ma200 = calculate_ma(closes, 200)
     rsi = calculate_rsi(closes, 14)
     macd = calculate_macd(closes, 12, 26, 9)
-    sepa = check_sepa(closes, current_price)
+    sepa = check_sepa(kline_data, current_price)  # v1.3.0: 传入 kline_data 以使用 high/low
     volume_analysis = analyze_volume(kline_data)
 
     # ========== 技术面评分汇总 ==========
@@ -791,11 +849,12 @@ def main():
     # --- MACD (5分) ---
     if macd is not None:
         macd_max = 5
-        if macd["dif"] > macd["dea"] and macd["histogram"] > 0:
+        sig = macd["signal_text"]
+        if "多头（" in sig:          # 强多头: DIF>DEA 且柱状图为正
             macd_score = 5
-        elif macd["dif"] > macd["dea"] or macd["histogram"] > 0:
+        elif "减弱" in sig:          # 多头减弱 或 空头减弱
             macd_score = 3
-        else:
+        else:                        # 空头
             macd_score = 0
         tech_raw += macd_score
         tech_max += macd_max
@@ -823,16 +882,29 @@ def main():
         all_missing.append("量价分析（K线不足）")
 
     # --- 筹码 (5分A股/3分港美股) ---
-    # 筹码数据不在 kline 管道中，此处只输出占位，
-    # 实际筹码分数由外部调用 score_chip() 获取后手动合并。
-    # main() 里标记筹码为"待外部输入"
-    chip_note = "筹码评分需单独调用 score_chip()，此处不包含"
+    # v1.3.0: 支持 --chip 参数自动合并筹码分数
+    chip_result = None
+    if args.chip:
+        try:
+            with open(args.chip, 'r', encoding='utf-8') as f:
+                chip_json = json.load(f)
+            chip_result = score_chip(chip_json, market=args.market)
+            if chip_result["applicable"]:
+                tech_raw += chip_result["raw_score"]
+                tech_max += chip_result["effective_max"]
+            else:
+                all_missing.extend(chip_result["missing"])
+        except Exception as e:
+            all_missing.append(f"筹码（读取 --chip 文件失败: {e}）")
+    else:
+        chip_note = "筹码评分需 --chip 参数或单独调用 score_chip()"
 
     # ========== 格式化输出 ==========
     print("=" * 60)
-    print(f"技术指标计算结果 (calc_indicators v1.2.0)")
+    print(f"技术指标计算结果 (calc_indicators v1.3.0)")
     print(f"日期: {latest_date}  |  收盘价: {current_price:.2f}")
     print(f"K线数量: {kline_count}  |  数据完整性: {completeness['level']}级")
+    print(f"市场: {args.market}")
     print("=" * 60)
 
     # --- 均线 ---
@@ -896,23 +968,44 @@ def main():
         print(f"  量价质量: {va['vol_quality']}")
         print(f"  评分: {vol_raw}/{vol_max}分")
 
-    # --- 筹码占位 ---
+    # --- 筹码输出 ---
     print(f"\n【筹码结构】")
-    print(f"  {chip_note}")
-    print(f"  使用方法: 将 stock-data chip 的 JSON 传入 score_chip(data, market)")
+    if chip_result is not None and chip_result["applicable"]:
+        print(f"  评分: {chip_result['raw_score']}/{chip_result['effective_max']}分 (市场: {args.market})")
+        for item in chip_result["items"]:
+            ratio_str = f"{'满分' if item['score_ratio'] == 1.0 else '半分' if item['score_ratio'] == 0.5 else '零分'}"
+            print(f"  · {item['name']}: {item['value']} → {ratio_str}")
+        if chip_result["missing"]:
+            for m in chip_result["missing"]:
+                print(f"  ⚠️ 缺失: {m}")
+    elif chip_result is not None:
+        print(f"  筹码不可用: {', '.join(chip_result['missing'])}")
+    else:
+        print(f"  {chip_note}")
+        print(f"  用法: stock-data chip <code> > chip.json")
+        print(f"        然后加 --chip chip.json --market {args.market}")
 
     # --- 数据完整性 ---
     print(f"\n【数据完整性】")
     print(f"  等级: {completeness['level']}级 — {completeness['description']}")
-    print(f"  技术面评分上限(参考): {completeness['score_cap']}分")
 
-    # --- v5.2: 技术面汇总（不含筹码） ---
-    mapping = calculate_score_mapping(tech_raw, tech_max)
+    # --- v5.2: 技术面汇总 ---
+    # 技术面理论满分: SEPA(40) + RSI(5) + MACD(5) + 量价(5) + 筹码(5或3)
+    # 含筹码时: A股=60, 港美股=58; 不含筹码=55
+    if chip_result is not None and chip_result["applicable"]:
+        tech_theoretical = 60 if args.market == "A" else 58
+        chip_label = "含筹码"
+    else:
+        tech_theoretical = 55  # SEPA(40)+RSI(5)+MACD(5)+量价(5)
+        chip_label = "不含筹码"
+
+    mapping = calculate_score_mapping(tech_raw, tech_max, theoretical_max=tech_theoretical)
     confidence = determine_confidence(completeness["level"], mapping["coverage_pct"])
 
     print(f"\n{'=' * 60}")
-    print(f"【技术面评分汇总 (不含筹码)】")
+    print(f"【技术面评分汇总 ({chip_label})】")
     print(f"  原始得分: {tech_raw} / 有效满分: {tech_max}")
+    print(f"  理论满分: {tech_theoretical}（{chip_label}）")
     if mapping["mapped_score"] is not None:
         print(f"  映射得分: {mapping['mapped_score']}分 (映射到100分制)")
     else:
