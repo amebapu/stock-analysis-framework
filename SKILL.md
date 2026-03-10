@@ -113,7 +113,7 @@ stock-data finance SNDK.OQ income 4
 
 | 检查项 | 标准 | 数据获取方式 |
 |--------|------|-------------|
-| 标普500趋势 | >MA50且>MA200 | `stock-data kline usSPY day 200 qfq \| python calc_indicators.py` |
+| 标普500趋势 | >MA50且>MA200 | `stock-data kline usSPY day 252 qfq \| python calc_indicators.py` |
 | VIX恐慌指数 | <20为舒适区 | `stock-data quote usVIX` (读取 price 字段) |
 
 **输出示例**：
