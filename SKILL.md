@@ -75,7 +75,7 @@ last_updated: "2026-03-10T2200"
 
 | 数据类型 | 正确格式 | 错误格式 | 示例 |
 |----------|----------|----------|------|
-| **K线数据** | `usTSLA`, `usAAPL` | `TSLA`, `AAPL` | `stock-data kline usTSLA day 200 qfq` |
+| **K线数据** | `usTSLA`, `usAAPL` | `TSLA`, `AAPL` | `stock-data kline usTSLA day 252 qfq` |
 | **财务数据** | `TSLA.N`, `TSLA.O`, `TSLA.OQ` | `usTSLA`, `TSLA` | `stock-data finance TSLA.N income 4` |
 | **实时行情** | `usTSLA` | `TSLA.N` | `stock-data quote usTSLA` |
 | **筹码分布** | `usTSLA` | `TSLA.N` | `stock-data chip usTSLA` |
@@ -393,7 +393,7 @@ stock-data finance SNDK.OQ income 4
 
 ### 5.1 calc_indicators.py
 
-**路径**：`scripts/calc_indicators.py`（项目根目录下的 scripts 文件夹）
+**路径**：`calc_indicators.py`（项目根目录）
 
 **功能**：从 stdin 读取 stock-data kline 的 JSON 输出，精确计算以下指标：
 - **MA**: MA50 / MA150 / MA200（简单移动平均线）
@@ -1366,7 +1366,7 @@ K线完整性 = [取决于实际K线数量]
 - [[股票数据分析工具]] - stock-data v2.3.0 使用指南
 - [[米勒维尼SEPA策略]] - 核心方法论详解（中短线）
 - [[深度研究10维度]] - 长线分析框架详解（v6.0新增）
-- [[Python技术指标脚本]] - scripts/calc_indicators.py 说明
+- [[Python技术指标脚本]] - calc_indicators.py 说明
 - [[Python基本面评分脚本]] - calc_fundamentals.py v2.0.0 说明（含 trend_data）
 - [[Python总分汇总脚本]] - calc_score.py v1.0.0 说明（v7.0 新增）
 
