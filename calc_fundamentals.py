@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 基本面确定性计算脚本 - calc_fundamentals.py
-版本: 1.1.0 (2026-03-10)
+版本: 2.0.0 (2026-03-10)
 
 功能: 从 stdin 读取 stock-data finance 的 JSON 输出，
       确定性解析并评分基本面指标（净利润增速/营收增速/ROE/经营现金流）。
@@ -18,6 +18,10 @@
     - Bug1: stdin UTF-8编码（Windows管道GBK→解析失败）
     - Bug2: _find_row_value空行名匹配（''是任何字符串子串→表头被错误匹配）
     - Bug3: _find_row_value精确匹配优先+跳过空值标题行（"股东权益"空值行干扰ROE计算）
+  v2.0.0 (2026-03-10): 扩展多期趋势数据:
+    - 新增 trend_data 字段（近4期营收/净利润趋势+净利率变化）
+    - 新增 extract_a_trend_data() / extract_us_hk_trend_data()
+    - JSON 输出向后兼容（新增字段，旧消费者忽略即可）
 
 用法:
   # A股（summary 接口，一次返回利润表+资产负债表+现金流量表）
@@ -340,6 +344,205 @@ def parse_us_hk_table(obj, row_names):
 
 
 # ============================================================
+# 2b. 多期趋势数据提取（v2.0 新增）
+# ============================================================
+
+def extract_a_trend_data(obj):
+    """
+    从A股 lrb 格式提取近4期趋势数据。
+
+    A股 lrb 表头含多列报告期（如 [报告期1, 报告期2, ...]），
+    每行的各列对应各期数值。本函数遍历利润表的多列，
+    提取各期营收/净利润绝对值和同比增速。
+
+    返回: dict trend_data 或 None（数据不足时）
+    """
+    tables = obj.get("data", [])
+    if not isinstance(tables, list):
+        return None
+
+    trend = {"periods": [], "revenue": [], "net_profit": [], "net_margin": []}
+
+    for table in tables:
+        if not isinstance(table, list) or len(table) < 2:
+            continue
+        header = table[0]
+        table_name = _extract_cell_text(header, 0)
+
+        if "利润" not in table_name:
+            continue
+
+        # 提取多列报告期名（表头第1列起）
+        num_cols = len(header)
+        periods = []
+        for ci in range(1, min(num_cols, 5)):  # 最多4期
+            p = _extract_cell_text(header, ci)
+            if p:
+                periods.append((ci, p))
+
+        if not periods:
+            return None
+
+        trend["periods"] = [p for _, p in periods]
+
+        # 遍历数据行，查找营收和净利润
+        rev_rows = {}   # col_idx -> (value_text, yoy_text)
+        np_rows = {}
+
+        for row in table[1:]:
+            name = _extract_cell_text(row, 0)
+            if not name:
+                continue
+
+            for ci, _ in periods:
+                val = _extract_cell_text(row, ci)
+                if not val:
+                    continue
+
+                if "营业总收入增长率" in name:
+                    # lrb 增长率行只有一个值（最新期），不是多列
+                    # 跳过，我们从绝对值自行计算
+                    pass
+                elif "营业总收入" in name and "增长" not in name:
+                    rev_rows[ci] = val
+                elif "净利润增长率" in name:
+                    pass
+                elif "净利润" in name and "增长" not in name:
+                    np_rows[ci] = val
+
+        # 组装趋势数据
+        for ci, period in periods:
+            rev_text = rev_rows.get(ci)
+            rev_amt = parse_amount(rev_text) if rev_text else None
+            trend["revenue"].append({
+                "period": period,
+                "value_text": rev_text or "--",
+                "value_yi": rev_amt,
+            })
+
+            np_text = np_rows.get(ci)
+            np_amt = parse_amount(np_text) if np_text else None
+            trend["net_profit"].append({
+                "period": period,
+                "value_text": np_text or "--",
+                "value_yi": np_amt,
+            })
+
+            # 净利率 = 净利润 / 营收
+            if rev_amt and np_amt and rev_amt != 0:
+                margin = round(np_amt / rev_amt * 100, 2)
+            else:
+                margin = None
+            trend["net_margin"].append({
+                "period": period,
+                "pct": margin,
+            })
+
+        # 补算同比增速（当期 vs 同期数据不在 lrb 列中，用相邻期近似）
+        for series_key in ("revenue", "net_profit"):
+            series = trend[series_key]
+            for i, item in enumerate(series):
+                if i + 1 < len(series):
+                    cur = item.get("value_yi")
+                    prev = series[i + 1].get("value_yi")
+                    if cur is not None and prev is not None and prev != 0:
+                        item["qoq_pct"] = round((cur - prev) / abs(prev) * 100, 2)
+
+        break  # 只处理利润表
+
+    if not trend["periods"]:
+        return None
+    return trend
+
+
+def extract_us_hk_trend_data(income_obj, market):
+    """
+    从美股/港股 income 接口提取近4期趋势数据。
+
+    income_obj.data.data 是多个报表期数组（tables[0]=最新, tables[1]=次新...）。
+    遍历前4期，从各期提取营收/净利润/净利率。
+
+    返回: dict trend_data 或 None
+    """
+    data = income_obj.get("data", {})
+    tables = data.get("data", [])
+    if not tables:
+        return None
+
+    if market == "US":
+        row_map = {
+            "revenue": ["营业收入"],
+            "net_profit": ["净利润"],
+        }
+    else:  # HK
+        row_map = {
+            "revenue": ["营业收入"],
+            "net_profit": ["归属母公司所有者净利润", "除税后溢利", "净利润"],
+        }
+
+    trend = {"periods": [], "revenue": [], "net_profit": [], "net_margin": []}
+
+    for idx in range(min(len(tables), 4)):
+        t = tables[idx]
+        if not isinstance(t, list) or len(t) < 2:
+            continue
+
+        # 报告期
+        period = None
+        if isinstance(t[0], list) and len(t[0]) > 1:
+            date_cell = t[0][1]
+            if isinstance(date_cell, list):
+                period = str(date_cell[0]) if date_cell else f"Period-{idx}"
+            else:
+                period = str(date_cell) if date_cell else f"Period-{idx}"
+        period = period or f"Period-{idx}"
+        trend["periods"].append(period)
+
+        # 查找各指标
+        rev_val, rev_yoy = (None, None)
+        np_val, np_yoy = (None, None)
+
+        for key, candidates in row_map.items():
+            for name in candidates:
+                val, yoy = _find_row_value(t, name)
+                if val is not None:
+                    if key == "revenue":
+                        rev_val, rev_yoy = val, yoy
+                    else:
+                        np_val, np_yoy = val, yoy
+                    break
+
+        rev_amt = parse_amount(rev_val)
+        np_amt = parse_amount(np_val)
+
+        trend["revenue"].append({
+            "period": period,
+            "value_text": rev_val or "--",
+            "value_yi": rev_amt,
+            "yoy_pct": parse_pct(rev_yoy),
+        })
+        trend["net_profit"].append({
+            "period": period,
+            "value_text": np_val or "--",
+            "value_yi": np_amt,
+            "yoy_pct": parse_pct(np_yoy),
+        })
+
+        if rev_amt and np_amt and rev_amt != 0:
+            margin = round(np_amt / rev_amt * 100, 2)
+        else:
+            margin = None
+        trend["net_margin"].append({
+            "period": period,
+            "pct": margin,
+        })
+
+    if not trend["periods"]:
+        return None
+    return trend
+
+
+# ============================================================
 # 3. 评分引擎
 # ============================================================
 
@@ -490,7 +693,7 @@ def main():
     入口: 从 stdin 或文件读取财务 JSON → 解析 → 评分 → 输出。
     """
     parser = argparse.ArgumentParser(
-        description="米勒维尼基本面评分脚本 v1.1.0",
+        description="米勒维尼基本面评分脚本 v2.0.0",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 用法示例:
@@ -645,9 +848,18 @@ def main():
     # ========== 评分 ==========
     result = score_fundamentals(parsed)
 
+    # ========== 趋势数据提取 (v2.0 新增) ==========
+    trend_data = None
+    if args.market == "A":
+        # 仅 lrb 格式支持多期（summary 无多期数据）
+        if isinstance(obj.get("data"), list):
+            trend_data = extract_a_trend_data(obj)
+    elif args.market in ("US", "HK"):
+        trend_data = extract_us_hk_trend_data(income_obj, args.market)
+
     # ========== 输出 ==========
     print("=" * 60)
-    print(f"基本面评分结果 (calc_fundamentals v1.0.0)")
+    print(f"基本面评分结果 (calc_fundamentals v2.0.0)")
     print(f"市场: {args.market}  |  报告期: {result['report_period']}")
     print(f"数据来源: {result['data_source']}")
     print("=" * 60)
@@ -677,6 +889,18 @@ def main():
     else:
         print(f"  映射得分: 无法计算（有效满分为0）")
 
+    # 趋势概览
+    if trend_data and trend_data.get("periods"):
+        print(f"\n【多期趋势概览】(v2.0 新增)")
+        print(f"  覆盖期数: {len(trend_data['periods'])}")
+        print(f"  报告期: {' → '.join(trend_data['periods'])}")
+        for item in trend_data.get("revenue", [])[:1]:
+            if item.get("value_text") != "--":
+                print(f"  最新营收: {item['value_text']}")
+        for item in trend_data.get("net_profit", [])[:1]:
+            if item.get("value_text") != "--":
+                print(f"  最新净利润: {item['value_text']}")
+
     # 硬门槛检查
     if result['max_score'] > 0 and result['score'] < 15:
         print(f"\n  ⛔ 硬门槛触发: 基本面 < 15分 → D级，直接排除")
@@ -686,7 +910,7 @@ def main():
     # 输出 JSON 供管道调用
     print(f"\n<!-- JSON_OUTPUT_START -->")
     json_out = {
-        "version": "1.0.0",
+        "version": "2.0.0",
         "market": args.market,
         "report_period": result["report_period"],
         "score": result["score"],
@@ -696,6 +920,8 @@ def main():
         "missing": result["missing"],
         "deductions": result["deductions"],
     }
+    if trend_data:
+        json_out["trend_data"] = trend_data
     print(json.dumps(json_out, ensure_ascii=False, indent=2))
     print(f"<!-- JSON_OUTPUT_END -->")
 

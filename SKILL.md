@@ -2,22 +2,22 @@
 date: "2026-03-10"
 type: knowledge
 category: "investment"
-tags: ["米勒维尼", "SEPA", "股票分析", "中短线", "长线", "深度研究", "100分制", "分值映射", "基本面确定性"]
-sources: ["stock-data", "calc_indicators.py", "calc_fundamentals.py", "股市魔法师", "彼得林奇", "巴菲特"]
+tags: ["米勒维尼", "SEPA", "股票分析", "中短线", "长线", "深度研究", "100分制", "分值映射", "基本面确定性", "总分汇总", "ETF分类"]
+sources: ["stock-data", "calc_indicators.py", "calc_fundamentals.py", "calc_score.py", "股市魔法师", "彼得林奇", "巴菲特"]
 created_by: "AI Assistant"
-last_updated: "2026-03-10T2100"
+last_updated: "2026-03-10T2200"
 ---
 
-# 米勒维尼投资分析框架 v6.0 (100分制 + 深度研究)
+# 米勒维尼投资分析框架 v7.0 (100分制 + 深度研究 + 确定性汇总)
 
-> **版本**: v6.0  
+> **版本**: v7.0  
 > **创建时间**: 2026-03-09  
-> **最后更新**: 2026-03-10T2100  
+> **最后更新**: 2026-03-10T2200  
 > **核心方法论**: 马克·米勒维尼 SEPA（中短线）+ 彼得林奇/巴菲特深度研究（长线）  
 > **设计目的**: 对标的进行全方位验证——中短线评分决策 + 长线深度研究辅助  
 > **仓位上限**: 单标的最高20%  
 > **数据源**: stock-data v2.3.0（核心数据源，腾讯自选股）+ web_search（深度研究补充）  
-> **计算层**: Python calc_indicators.py v1.3.0（技术面）+ calc_fundamentals.py v1.1.0（基本面）  
+> **计算层**: calc_indicators.py v1.3.0（技术面）+ calc_fundamentals.py v2.0.0（基本面+趋势）+ calc_score.py v1.0.0（汇总+评级）  
 > **强制要求**: 252根K线优先 / 缺项映射 / 大盘环境必查 / 有效满分+置信等级输出 / 深度研究默认输出（除非用户明确不需要）
 
 ---
@@ -50,13 +50,14 @@ last_updated: "2026-03-10T2100"
 - **明确标注** - 无法获取的数据写"未获取"
 - **诚实告知** - 如果不能100%确定，明确告诉用户
 
-### 1.4 数据架构（三层设计）
+### 1.4 数据架构（四层设计, v7.0）
 
 | 层级 | 组件 | 用途 | 说明 |
 |------|------|------|------|
 | 数据层 | stock-data v2.3.0 | K线、行情、财务、新闻、评级、筹码 | 核心数据源（腾讯自选股） |
-| 计算层 | Python calc_indicators.py | MA/RSI/MACD/SEPA/量价/筹码 | 技术面确定性计算，零第三方依赖 |
-| 计算层 | Python calc_fundamentals.py | 净利润增速/营收增速/ROE/现金流 | 基本面确定性计算，支持A股/港股/美股 |
+| 计算层 | Python calc_indicators.py v1.3.0 | MA/RSI/MACD/SEPA/量价/筹码 | 技术面确定性计算，零第三方依赖 |
+| 计算层 | Python calc_fundamentals.py v2.0.0 | 净利润增速/营收增速/ROE/现金流 + 多期趋势 | 基本面确定性计算+趋势数据，支持A股/港股/美股 |
+| **汇总层** | **Python calc_score.py v1.0.0** | **标的分类 + 总分汇总 + 评级** | **ETF/ETN自动检测+分母剔除+映射评级（v7.0新增）** |
 | 研究层 | web_search + news/report | 行业/竞争/管理层/业务模型 | 深度研究定性分析（v6.0 新增） |
 
 **设计理由**：
@@ -283,13 +284,22 @@ stock-data finance SNDK.OQ income 4
 
 **数据来源**：`stock-data news/rating/report/quote/asfund/hkfund`
 
-| 指标 | 量化标准 | 分值 | 数据获取 |
-|------|----------|------|----------|
-| 新闻情绪 | 近10条新闻中正面≥3条（含"增长/突破/超预期/新高"等关键词） | 3分 | `stock-data news <code> 1 10 2` |
-| 无重大利空 | 近10条无"下调/警告/违规/退市/爆雷/做空"等负面关键词 | 3分 | `stock-data news <code> 1 10 2` |
-| 机构评级 | A股: 买入+增持占比>70%; 港美股: 研报正面评价为主 | 3分 | `stock-data rating`(A股) / `stock-data report`(港美股) |
-| 流动性 | 日成交额: 美股>$50M / A股>5亿 / 港股>5亿港元 | 3分 | `stock-data quote <code>`（读取 amount 字段） |
-| 资金流向 | A股: 主力净流入>0且近3日流入; 港股: 卖空占比下降 | 3分 | `stock-data asfund`(A股) / `stock-data hkfund`(港股) |
+> **v7.0 分类**: 催化剂15分中，部分指标可完全量化（Python 确定性判断），部分需大模型定性分析。
+
+#### 可量化部分（6分，Python 确定性判断）
+
+| 指标 | 量化标准 | 分值 | 数据获取 | 判断方式 |
+|------|----------|------|----------|----------|
+| 流动性 | 日成交额: 美股>$50M / A股>5亿 / 港股>5亿港元 | 3分 | `stock-data quote <code>`（读取 amount 字段） | **确定性阈值**：直接比较数值，无需大模型 |
+| 资金流向 | A股: 主力净流入>0且近3日流入; 港股: 卖空占比下降 | 3分 | `stock-data asfund`(A股) / `stock-data hkfund`(港股) | **确定性阈值**：正负判断+趋势比较 |
+
+#### 需大模型部分（9分，定性分析）
+
+| 指标 | 量化标准 | 分值 | 数据获取 | 判断方式 |
+|------|----------|------|----------|----------|
+| 新闻情绪 | 近10条新闻中正面≥3条（含"增长/突破/超预期/新高"等关键词） | 3分 | `stock-data news <code> 1 10 2` | 大模型语义理解 |
+| 无重大利空 | 近10条无"下调/警告/违规/退市/爆雷/做空"等负面关键词 | 3分 | `stock-data news <code> 1 10 2` | 大模型语义理解 |
+| 机构评级 | A股: 买入+增持占比>70%; 港美股: 研报正面评价为主 | 3分 | `stock-data rating`(A股) / `stock-data report`(港美股) | 大模型综合解读 |
 
 ---
 
@@ -439,16 +449,17 @@ stock-data kline hk00700 day 252 qfq | python calc_indicators.py --chip hk700_ch
 | `--chip` | 筹码JSON文件路径（stock-data chip 输出） | 无（不含筹码） |
 | `--market` | 市场类型: A/HK/US | A |
 
-### 5.2 calc_fundamentals.py (v1.1.0)
+### 5.2 calc_fundamentals.py (v2.0.0)
 
 **路径**：`calc_fundamentals.py`（项目根目录）
 
-**功能**：从 stock-data finance JSON 输出中确定性解析基本面指标并评分（25分满分制）。
+**功能**：从 stock-data finance JSON 输出中确定性解析基本面指标并评分（25分满分制）。v2.0 新增多期趋势数据提取。
 
 **解决的问题**：
 - 技术面已有 `calc_indicators.py` 做确定性计算
 - 基本面此前依赖大模型手动解析嵌套 JSON → 易出错/幻觉
 - 本脚本将基本面评分也纳入 Python 确定性计算层
+- **v2.0**: 深度研究维度5"财务质量"需要多期趋势数据，此前需大模型手动解析 → 现在 Python 自动提取
 
 **特性**：
 - 零第三方依赖（仅 json/sys/re/argparse 标准库）
@@ -458,6 +469,7 @@ stock-data kline hk00700 day 252 qfq | python calc_indicators.py --chip hk700_ch
 - 缺失项自动从满分中剔除，映射到100分制
 - JSON 结构化输出，支持管道调用
 - Windows stdin UTF-8 兼容
+- **v2.0 新增**: `trend_data` 字段（近4期营收/净利润趋势+净利率变化）
 
 **使用方法**：
 
@@ -502,7 +514,91 @@ python calc_fundamentals.py --market HK --income hk_zhsy.json --balance hk_zcfz.
 
 > 保底机制：最多扣10分（保底15分），缺失项从分母剔除后映射。
 
-### 5.3 技术指标计算公式与K线需求
+### 5.3 calc_score.py (v1.0.0, v7.0 新增)
+
+**路径**：`calc_score.py`（项目根目录）
+
+**功能**：读取 calc_indicators.py 和 calc_fundamentals.py 的 JSON 输出，确定性汇总三大维度总分，输出最终评级和仓位建议。
+
+**解决的问题**：
+- 此前总分汇总由大模型手算（基本面+技术面+催化剂），存在计算错误风险
+- ETF/ETN 标的不应走基本面评分，但此前无自动检测机制
+- 缺失项分母剔除+映射计算容易出错
+
+**核心功能**：
+1. **标的分类**: 自动检测 ETF/ETN/个股（基于代码模式匹配），支持 `--type` 手动覆盖
+2. **分母剔除**: ETF/ETN 自动将基本面25分从分母中剔除
+3. **总分汇总**: 技术面 + 基本面 + 催化剂 → 映射到100分制
+4. **硬门槛检查**: 基本面<15分 或 SEPA<4项 → 强制 D 级
+5. **评级输出**: A+/A/B/C/D 五级 + 仓位建议（0%~20%）
+
+**特性**：
+- 零第三方依赖（仅 json/sys/re/argparse/math/os 标准库）
+- 支持 `<!-- JSON_OUTPUT_START -->` 包裹格式（兼容 calc_*py 输出）
+- 同时输出人类可读文本和 JSON 结构化数据
+
+**使用方法**：
+
+```bash
+# 最常用: 从预计算 JSON 文件汇总
+python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA
+
+# ETF 标的（自动检测，基本面分母剔除）
+python calc_score.py --tech tech.json --catalyst 10 --code sh510300
+
+# 手动指定标的类型
+python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code AAPL --type stock
+```
+
+**命令行参数**：
+
+| 参数 | 说明 | 必需 |
+|------|------|------|
+| `--code` | 标的代码（如 usTSLA, sh600519, hk00700, sh510300） | ✅ |
+| `--tech` | 技术面 JSON 文件（calc_indicators.py 输出） | 可选 |
+| `--fund` | 基本面 JSON 文件（calc_fundamentals.py 输出） | 可选 |
+| `--catalyst` | 催化剂分数（0~15） | 可选 |
+| `--type` | 手动指定标的类型: etf/etn/stock（覆盖自动检测） | 可选 |
+
+**评级规则**（映射到100分制后）：
+
+| 映射总分 | 评级 | 建议 | 仓位 |
+|---------|------|------|------|
+| ≥85 | A+ | 强力买入候选 | 15%~20% |
+| ≥70 | A | 买入候选 | 10%~15% |
+| ≥55 | B | 观察名单 | 5%~10% |
+| ≥40 | C | 谨慎观望 | 0%~5% |
+| <40 | D | 排除 | 0% |
+
+**ETF/ETN 自动检测规则**：
+
+| 市场 | 检测方式 | 示例 |
+|------|----------|------|
+| A股 | 代码前缀: sh510/sh511/.../sz159/sz160 等 | sh510300 → ETF |
+| 港股 | 代码段 02800~02899/03000~03199 或含"ETF" | hk02800 → ETF |
+| 美股 | 内置常见 ETF/ETN 代码表（SPY/QQQ/VXX等） | usSPY → ETF |
+
+**JSON 输出结构**：
+
+```json
+{
+  "version": "1.0.0",
+  "security_code": "usTSLA",
+  "security_type": "STOCK",
+  "tech_score": {"raw": 34, "max": 55, "theoretical": 60},
+  "fund_score": {"raw": 20, "max": 25, "theoretical": 25},
+  "catalyst_score": {"raw": 8, "max": 15},
+  "total": {"raw": 62, "effective_max": 95, "mapped": 65.3},
+  "missing": ["筹码"],
+  "coverage_pct": 95.0,
+  "hard_thresholds": {"fund_below_15": false, "sepa_below_4": false, "red_line": false},
+  "rating": "B",
+  "position_pct": 10,
+  "position_desc": "试探仓位 5%~10%"
+}
+```
+
+### 5.4 技术指标计算公式与K线需求
 
 | 指标 | 公式 | 最少所需K线 | 说明 |
 |------|------|-----------|------|
@@ -606,10 +702,20 @@ stock-data hkfund <code> day 20           # 港股
 
 ### 步骤4：计算总分，确定等级和仓位
 
+> **v7.0**: 推荐使用 `calc_score.py` 确定性汇总。手动提供技术面/基本面 JSON 输出 + 催化剂分数即可。
+
 ```
+# 确定性汇总（推荐）
+python calc_score.py --tech tech_output.json --fund fund_output.json --catalyst 8 --code <code>
+
+# 汇总流程:
 总分 = 基本面 + 技术面 + 催化剂
 ↓
-检查硬门槛（基本面<15 → D级; SEPA<4项 → 最高C级）
+标的分类（ETF/ETN → 剔除基本面分母）
+↓
+映射到100分制
+↓
+检查硬门槛（基本面<15 → D级; SEPA<4项 → 强制D级）
 ↓
 确定等级（A+/A/B/C/D）
 ↓
@@ -654,7 +760,7 @@ stock-data hkfund <code> day 20           # 港股
 ## 七、输出报告模板
 
 ```markdown
-🔍 [TICKER] 米勒维尼分析报告 v5.2
+🔍 [TICKER] 米勒维尼分析报告 v7.0
 *分析时间: 2026-XX-XX*
 *数据完整性: [A/A-/B/C/D/E/F]级*
 *置信等级: [高/中/低/极低]*
@@ -697,7 +803,7 @@ stock-data hkfund <code> day 20           # 港股
 └─ 资金流向: [净流入/流出] [来源: asfund/hkfund] → X/3分
 
 ═══════════════════════════════════════════════════
-综合评分 (v5.2)
+综合评分 (v7.0, calc_score.py 确定性汇总)
 ═══════════════════════════════════════════════════
 
 【原始得分】
@@ -748,8 +854,9 @@ stock-data hkfund <code> day 20           # 港股
 - 价格/K线数据: stock-data v2.3.0 (腾讯自选股), [日期]
 - 财务数据: stock-data finance 接口
 - 技术指标(MA/RSI/MACD/SEPA/量价): Python calc_indicators.py v1.3.0 精确计算
-- 基本面指标(净利润/营收/ROE/现金流): Python calc_fundamentals.py v1.1.0 确定性计算
+- 基本面指标(净利润/营收/ROE/现金流/趋势): Python calc_fundamentals.py v2.0.0 确定性计算
 - 筹码分布: stock-data chip 接口 + score_chip() 确定性打分
+- 总分汇总/评级: Python calc_score.py v1.0.0 确定性计算（v7.0 新增）
 - 新闻/评级/资金: stock-data news/rating/report/asfund/hkfund 接口
 - 深度研究: stock-data news/report/finance + web_search 补充
 
@@ -944,8 +1051,10 @@ MACD: 空头减弱 → 3/5分
 - 流动性: 日成交远超$50M → 3/3分 [来源: quote]
 - 资金流向: N/A（美股无此数据）→ 0/3分
 
-**总分计算（含映射, v5.2）**：
+**总分计算（含映射, v7.0）**：
 ```
+# 使用 calc_score.py 确定性计算:
+# python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA
 有效满分 = 25分(基本面全有) + 58分(技术面,筹码3分) + 15分 = 98分
 原始总分 = 15 + 34 + 8 = 57分
 映射后分数 = 57/98 × 100 = 58.2分
@@ -1045,18 +1154,39 @@ K线完整性 = [取决于实际K线数量]
 
 **核心问题**: 分析近年财务质量。重点关注收入增长一致性、利润率、债务水平、现金流强度和资本配置。
 
-| 子项 | 分值 | 评分标准 |
-|------|------|---------|
-| 收入增长一致性 | 2分 | 近4期营收趋势（2=持续增长/1=波动/0=下滑） |
-| 利润率趋势 | 2分 | 净利率是否改善（2=持续扩张/1=稳定/0=收缩） |
-| 债务健康度 | 2分 | 负债率/利息覆盖（2=低杠杆+强覆盖/1=适中/0=高杠杆+弱覆盖） |
-| 现金流强度 | 2分 | 自由现金流（2=持续正且增长/1=正但波动/0=负或恶化） |
-| 资本配置 | 2分 | 回购/分红/投资是否理性（2=优秀配置/1=一般/0=浪费资本） |
+> **v7.0 数据驱动升级**: 前2个子项（收入一致性+利润率趋势）优先引用 `calc_fundamentals.py v2.0` 的 `trend_data` 字段，减少大模型手动解析。
 
-**数据来源**: `stock-data finance`（calc_fundamentals.py 数据驱动）+ `stock-data report`  
-**分析方式**: **数据驱动为主**。引用 SEPA 评分中的基本面数据，补充多期趋势分析和利润率/债务等 SEPA 未覆盖的维度
+| 子项 | 分值 | 评分标准 | 数据来源 |
+|------|------|---------|----------|
+| 收入增长一致性 | 2分 | 近4期营收趋势（2=持续增长/1=波动/0=下滑） | **`trend_data.revenue`**（v2.0 自动提取各期营收值+环比） |
+| 利润率趋势 | 2分 | 净利率是否改善（2=持续扩张/1=稳定/0=收缩） | **`trend_data.net_margin`**（v2.0 自动计算各期净利率） |
+| 债务健康度 | 2分 | 负债率/利息覆盖（2=低杠杆+强覆盖/1=适中/0=高杠杆+弱覆盖） | `balance` + `report` |
+| 现金流强度 | 2分 | 自由现金流（2=持续正且增长/1=正但波动/0=负或恶化） | `cashflow` / `xjll` |
+| 资本配置 | 2分 | 回购/分红/投资是否理性（2=优秀配置/1=一般/0=浪费资本） | `report` + `web_search` |
 
-> **与 SEPA 基本面的关系**: SEPA 基本面25分关注"是否达标"（单季度快照），深度研究财务质量关注"趋势和质量"（多期纵深）。两者互补不重复。
+**trend_data 使用指南**（v7.0 新增）：
+
+当 `calc_fundamentals.py v2.0` 的 JSON 输出包含 `trend_data` 时：
+```
+收入增长一致性判断:
+  trend_data.revenue → 查看各期 value_yi，判断是否逐期增长
+  - 4期连续增长 → 2分
+  - 有波动但整体向上 → 1分
+  - 连续下滑或大幅波动 → 0分
+
+利润率趋势判断:
+  trend_data.net_margin → 查看各期 pct，判断净利率变化方向
+  - 4期净利率持续扩张 → 2分
+  - 基本稳定（波动<2pp） → 1分
+  - 持续收缩 → 0分
+```
+
+> **无 trend_data 时的降级处理**: 若 `calc_fundamentals.py` 输出无 `trend_data`（如使用 summary 接口），则回退到大模型手动分析 finance 数据，但**必须在报告中标注"trend_data 不可用，以下为手动分析"**。
+
+**数据来源**: `stock-data finance`（`calc_fundamentals.py v2.0` trend_data 数据驱动）+ `stock-data report`  
+**分析方式**: **数据驱动为主**。前2项直接引用 trend_data，后3项结合研报和搜索补充
+
+> **与 SEPA 基本面的关系**: SEPA 基本面25分关注"是否达标"（单季度快照），深度研究财务质量关注"趋势和质量"（多期纵深）。两者互补不重复。v7.0 的 `trend_data` 让前2个子项完全由 Python 数据驱动。
 
 ---
 
@@ -1227,6 +1357,7 @@ K线完整性 = [取决于实际K线数量]
 | v5.2.1 | 2026-03-10 | calc_indicators v1.3.0: [Bug1]coverage_pct按维度理论满分计算(非写死100); [Bug2]52周高低点改用high/low; [Bug3]新增--chip/--market参数自动合并筹码; [Bug4]Windows兼容(自动过滤HTTP日志); [Bug5]MACD评分补全3分档(signal_text映射); [Bug7]移除废弃score_cap字段 |
 | v5.3 | 2026-03-10 | 新增calc_fundamentals.py v1.1.0: 基本面确定性计算脚本(支持A股summary/lrb+港股zhsy/zcfz/xjll+美股income/balance); 3个Bug修复(stdin UTF-8编码/空行名匹配/精确匹配优先); 数据架构升级为双计算层(技术面+基本面) |
 | v6.0 | 2026-03-10 | **深度研究体系**: 新增10维度长线分析(商业理解/收入分解/行业背景/竞争格局/财务质量/风险下行/管理团队/牛熊情景/估值思考/长期论点); 每维度10分独立评分(总100分); 5星评级体系(⭐-⭐⭐⭐⭐⭐); SEPA+深度研究联合解读矩阵; 默认每次输出(可选关闭); 数据架构升级为三层(数据+计算+研究); 支持web_search补充定性分析 |
+| v7.0 | 2026-03-10 | **确定性汇总升级**: 新增calc_score.py v1.0.0(标的分类ETF/ETN/个股+总分汇总+分母剔除+评级+仓位建议); 升级calc_fundamentals.py至v2.0.0(新增trend_data多期趋势数据); 催化剂章节区分可量化(流动性/资金流向)与需大模型(新闻/评级); 深度研究维度5"财务质量"引用trend_data数据驱动; 数据架构升级为四层(数据+计算+汇总+研究) |
 
 ---
 
@@ -1236,7 +1367,8 @@ K线完整性 = [取决于实际K线数量]
 - [[米勒维尼SEPA策略]] - 核心方法论详解（中短线）
 - [[深度研究10维度]] - 长线分析框架详解（v6.0新增）
 - [[Python技术指标脚本]] - scripts/calc_indicators.py 说明
-- [[Python基本面评分脚本]] - calc_fundamentals.py 说明
+- [[Python基本面评分脚本]] - calc_fundamentals.py v2.0.0 说明（含 trend_data）
+- [[Python总分汇总脚本]] - calc_score.py v1.0.0 说明（v7.0 新增）
 
 ---
 
