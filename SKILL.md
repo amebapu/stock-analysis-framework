@@ -211,7 +211,7 @@ stock-data finance SNDK.OQ income 4
 > **v5.2变更**：从6项改为5项，移除"MA200走平或上升"（与多头排列共线性高）；合并原"MA50>MA150"和"MA150>MA200"为一项"多头排列"；新增"距52周低点>25%"独立项。每项均为8分。
 
 **硬门槛**：
-- SEPA模板<4项通过 → **最高C级（60分），建议观望**
+- SEPA模板<4项通过 → **强制D级，排除**（与 calc_score.py 硬门槛一致）
 - 米勒维尼：仅第二阶段（主升浪）具备交易价值
 
 #### 2.3.2 RSI 相对强弱（5分）
@@ -383,9 +383,10 @@ stock-data finance SNDK.OQ income 4
 
 | 条件 | 结果 |
 |------|------|
-| 基本面<15分 | D级，排除 |
-| SEPA模板<4项通过 | 最高C级，观望 |
+| 基本面<15分（个股，且已提供基本面数据） | D级，排除 |
+| SEPA模板<4项通过 | D级，排除（所有标的类型均适用，含ETF/ETN） |
 | 触碰红线 | D级，排除/止损 |
+| 个股未提供基本面数据 | 不触发硬门槛，但缺失项会降低覆盖率 |
 
 ---
 
@@ -514,34 +515,39 @@ python calc_fundamentals.py --market HK --income hk_zhsy.json --balance hk_zcfz.
 
 > 保底机制：最多扣10分（保底15分），缺失项从分母剔除后映射。
 
-### 5.3 calc_score.py (v1.0.0, v7.0 新增)
+### 5.3 calc_score.py (v1.1.0, v7.0 新增)
 
 **路径**：`calc_score.py`（项目根目录）
 
-**功能**：读取 calc_indicators.py 和 calc_fundamentals.py 的 JSON 输出，确定性汇总三大维度总分，输出最终评级和仓位建议。
+**功能**：读取技术面+基本面数据+催化剂分数，确定性汇总三大维度总分，输出最终评级和仓位建议。支持两种技术面输入模式：预计算 JSON 文件或 stdin K 线管道。
 
 **解决的问题**：
 - 此前总分汇总由大模型手算（基本面+技术面+催化剂），存在计算错误风险
 - ETF/ETN 标的不应走基本面评分，但此前无自动检测机制
 - 缺失项分母剔除+映射计算容易出错
+- v1.1.0: 此前 calc_indicators.py 无 JSON 输出标记，`--tech` 参数实操断层；新增 `--kline-stdin` 管道模式绕过此限制
 
 **核心功能**：
 1. **标的分类**: 自动检测 ETF/ETN/个股（基于代码模式匹配），支持 `--type` 手动覆盖
 2. **分母剔除**: ETF/ETN 自动将基本面25分从分母中剔除
 3. **总分汇总**: 技术面 + 基本面 + 催化剂 → 映射到100分制
-4. **硬门槛检查**: 基本面<15分 或 SEPA<4项 → 强制 D 级
+4. **硬门槛检查**: 基本面<15分（个股且已提供数据时）或 SEPA<4项 → 强制 D 级
 5. **评级输出**: A+/A/B/C/D 五级 + 仓位建议（0%~20%）
+6. **管道模式**: `--kline-stdin` 直接从 stdin 读取 K 线 JSON，复用 calc_indicators.py 函数计算技术面
 
 **特性**：
-- 零第三方依赖（仅 json/sys/re/argparse/math/os 标准库）
-- 支持 `<!-- JSON_OUTPUT_START -->` 包裹格式（兼容 calc_*py 输出）
+- 依赖同目录 calc_indicators.py（复用公共函数）
+- 支持 `<!-- JSON_OUTPUT_START -->` 包裹格式（兼容 calc_fundamentals.py 输出）
 - 同时输出人类可读文本和 JSON 结构化数据
 
 **使用方法**：
 
 ```bash
-# 最常用: 从预计算 JSON 文件汇总
+# 模式A: 从预计算 JSON 文件汇总（最常用）
 python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA
+
+# 模式B: 从 stdin 读取 K 线 直接计算技术面（与 --tech 互斥，推荐）
+stock-data kline usTSLA day 252 qfq | python calc_score.py --kline-stdin --code usTSLA --catalyst 8
 
 # ETF 标的（自动检测，基本面分母剔除）
 python calc_score.py --tech tech.json --catalyst 10 --code sh510300
@@ -555,9 +561,10 @@ python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code AAPL 
 | 参数 | 说明 | 必需 |
 |------|------|------|
 | `--code` | 标的代码（如 usTSLA, sh600519, hk00700, sh510300） | ✅ |
-| `--tech` | 技术面 JSON 文件（calc_indicators.py 输出） | 可选 |
+| `--tech` | 技术面 JSON 文件（与 `--kline-stdin` 互斥） | 可选 |
+| `--kline-stdin` | 从 stdin 读取 K 线 JSON 直接计算技术面（与 `--tech` 互斥） | 可选 |
 | `--fund` | 基本面 JSON 文件（calc_fundamentals.py 输出） | 可选 |
-| `--catalyst` | 催化剂分数（0~15） | 可选 |
+| `--catalyst` | 催化剂分数（0~15，支持小数） | 可选 |
 | `--type` | 手动指定标的类型: etf/etn/stock（覆盖自动检测） | 可选 |
 
 **评级规则**（映射到100分制后）：
@@ -705,8 +712,11 @@ stock-data hkfund <code> day 20           # 港股
 > **v7.0**: 推荐使用 `calc_score.py` 确定性汇总。手动提供技术面/基本面 JSON 输出 + 催化剂分数即可。
 
 ```
-# 确定性汇总（推荐）
+# 确定性汇总 - 模式A（从预计算 JSON，最常用）
 python calc_score.py --tech tech_output.json --fund fund_output.json --catalyst 8 --code <code>
+
+# 确定性汇总 - 模式B（管道模式，推荐，无需手动保存 JSON）
+stock-data kline <code> day 252 qfq | python calc_score.py --kline-stdin --fund fund_output.json --catalyst 8 --code <code>
 
 # 汇总流程:
 总分 = 基本面 + 技术面 + 催化剂
@@ -715,7 +725,7 @@ python calc_score.py --tech tech_output.json --fund fund_output.json --catalyst 
 ↓
 映射到100分制
 ↓
-检查硬门槛（基本面<15 → D级; SEPA<4项 → 强制D级）
+检查硬门槛（基本面<15分且个股 → D级; SEPA<4项 → 强制D级）
 ↓
 确定等级（A+/A/B/C/D）
 ↓
@@ -1054,14 +1064,14 @@ MACD: 空头减弱 → 3/5分
 **总分计算（含映射, v7.0）**：
 ```
 # 使用 calc_score.py 确定性计算:
-# python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA
+# python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA  (v1.1.0)
 有效满分 = 25分(基本面全有) + 58分(技术面,筹码3分) + 15分 = 98分
 原始总分 = 15 + 34 + 8 = 57分
 映射后分数 = 57/98 × 100 = 58.2分
 分母覆盖率 = 98/100 = 98%
 K线完整性 = [取决于实际K线数量]
 置信等级 = [取决于K线等级+覆盖率]
-评级: D级 (58.2分, <60分区间)
+评级: B级 (58.2分, ≥55分区间)
 ```
 
 若现金流未获取示例：
@@ -1069,15 +1079,15 @@ K线完整性 = [取决于实际K线数量]
 有效满分 = 20分(剔除现金流) + 58 + 15 = 93分
 原始总分 = 15 + 34 + 8 = 57分
 映射后分数 = 57/93 × 100 = 61.3分
-评级: C级 (分数更公平)
+评级: B级 (61.3分, ≥55分区间; 分数更公平)
 缺失项: [经营现金流]
 ```
 
 ### 8.3 结论
-- 评级: C级
-- 仓位: 5%（极轻仓或放弃）
+- 评级: B级（映射后 58.2 分，≥55 分区间）
+- 仓位: 5~10%（试探仓位，严格止损）
 - 原因: 基本面恶化（净利润-47%，营收-3%），触碰"连续业绩下滑"红线边缘；技术面尚可但股价跌破MA50
-- 建议: 建议观望，等待下季度财报验证是否回暖
+- 建议: 建议观望或极轻仓，等待下季度财报验证是否回暖
 
 ---
 
@@ -1358,6 +1368,7 @@ K线完整性 = [取决于实际K线数量]
 | v5.3 | 2026-03-10 | 新增calc_fundamentals.py v1.1.0: 基本面确定性计算脚本(支持A股summary/lrb+港股zhsy/zcfz/xjll+美股income/balance); 3个Bug修复(stdin UTF-8编码/空行名匹配/精确匹配优先); 数据架构升级为双计算层(技术面+基本面) |
 | v6.0 | 2026-03-10 | **深度研究体系**: 新增10维度长线分析(商业理解/收入分解/行业背景/竞争格局/财务质量/风险下行/管理团队/牛熊情景/估值思考/长期论点); 每维度10分独立评分(总100分); 5星评级体系(⭐-⭐⭐⭐⭐⭐); SEPA+深度研究联合解读矩阵; 默认每次输出(可选关闭); 数据架构升级为三层(数据+计算+研究); 支持web_search补充定性分析 |
 | v7.0 | 2026-03-10 | **确定性汇总升级**: 新增calc_score.py v1.0.0(标的分类ETF/ETN/个股+总分汇总+分母剔除+评级+仓位建议); 升级calc_fundamentals.py至v2.0.0(新增trend_data多期趋势数据); 催化剂章节区分可量化(流动性/资金流向)与需大模型(新闻/评级); 深度研究维度5"财务质量"引用trend_data数据驱动; 数据架构升级为四层(数据+计算+汇总+研究) |
+| v7.0.1 | 2026-03-10 | **一致性修复**: calc_score.py升级至v1.1.0: 新增--kline-stdin管道模式(复用calc_indicators.py公共函数,与--tech互斥); 修复SEPA硬门槛描述矛盾(2.3.1/4.4/5.3统一为"强制D级"); 修复TSLA示例评级错误(58.2分按≥55应为B级); 统一硬门槛表述(基本面<15限定"个股且已提供数据"); ETF/ETN SEPA硬门槛适用性明确标注 |
 
 ---
 

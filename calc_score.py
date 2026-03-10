@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 总分汇总脚本 - calc_score.py
-版本: 1.0.0 (2026-03-10)
+版本: 1.1.0 (2026-03-10)
 
 功能:
   1. 标的分类: 自动检测 ETF/ETN/个股，ETF/ETN 剔除基本面分母
@@ -10,8 +10,11 @@
   3. 评级输出: A+/A/B/C/D 五级 + 仓位建议 + 硬门槛检查 + JSON
 
 用法:
-  # 从预计算 JSON 文件汇总（最常用）
+  # 模式A: 从预计算 JSON 文件汇总（最常用）
   python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA
+
+  # 模式B: 从 stdin 读取 K 线 JSON 直接计算技术面（与 --tech 互斥）
+  stock-data kline usTSLA day 252 qfq | python calc_score.py --kline-stdin --code usTSLA
 
   # ETF 标的（自动剔除基本面分母）
   python calc_score.py --tech tech.json --catalyst 10 --code sh510300
@@ -19,7 +22,13 @@
   # 手动指定标的类型（覆盖自动检测）
   python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code AAPL --type stock
 
-依赖: 仅使用 Python 标准库（json/sys/re/argparse/math/os）
+变更历史:
+  v1.0.0: 初始版本
+  v1.1.0: 新增 --kline-stdin 模式（复用 calc_indicators.py 函数直接从 stdin 计算技术面）;
+          修复硬门槛绕过（未提供 --fund 时个股标注 fund_missing 而非静默跳过）;
+          统一版本号到 v1.1.0
+
+依赖: Python 标准库（json/sys/re/argparse/math/os）+ 同目录 calc_indicators.py
 """
 
 import json
@@ -28,6 +37,19 @@ import re
 import argparse
 import math
 import os
+
+# --kline-stdin 模式依赖: 从同目录 calc_indicators.py 复用公共函数
+from calc_indicators import (
+    parse_kline_json,
+    calculate_ma,
+    calculate_rsi,
+    calculate_macd,
+    check_sepa,
+    analyze_volume,
+    calculate_score_mapping,
+    assess_data_completeness,
+    determine_confidence,
+)
 
 
 # ============================================================
@@ -169,6 +191,111 @@ def load_json_file(filepath):
     with open(filepath, 'r', encoding='utf-8') as f:
         text = f.read()
     return _extract_json_block(text)
+
+
+# ============================================================
+# 2b. --kline-stdin: 从 K 线 JSON 直接计算技术面
+# ============================================================
+
+def compute_tech_from_kline(raw_text, market="A", chip_data=None):
+    """
+    复用 calc_indicators.py 公共函数，从 K 线原始 JSON 计算技术面评分。
+
+    参数:
+      raw_text  - stdin 读入的 stock-data kline JSON 文本
+      market    - 市场类型: "A"/"HK"/"US"
+      chip_data - 筹码数据 dict（可选，来自 stock-data chip）
+
+    返回: dict，格式与 calc_score.py --tech JSON 兼容:
+      {
+        "raw_score": int,
+        "effective_max": int,
+        "theoretical_max": int,
+        "missing_items": [...],
+        "sepa_passed_count": int,
+        "source": "kline-stdin",
+      }
+    """
+    kline_data = parse_kline_json(raw_text)
+    if not kline_data:
+        return None
+
+    closes = [d["close"] for d in kline_data]
+    current_price = closes[-1]
+    kline_count = len(kline_data)
+
+    all_missing = []
+    tech_raw = 0
+    tech_max = 0
+
+    # --- SEPA (40分) ---
+    sepa = check_sepa(kline_data, current_price)
+    tech_raw += sepa["raw_score"]
+    tech_max += sepa["effective_max"]
+    all_missing.extend(sepa["missing_items"])
+
+    # --- RSI (5分) ---
+    rsi = calculate_rsi(closes, 14)
+    if rsi is not None:
+        rsi_max = 5
+        if 40 <= rsi <= 70:
+            rsi_score = 5
+        elif (30 <= rsi < 40) or (70 < rsi <= 80):
+            rsi_score = 3
+        else:
+            rsi_score = 0
+        tech_raw += rsi_score
+        tech_max += rsi_max
+    else:
+        all_missing.append(f"RSI（需15根K线，当前{kline_count}根）")
+
+    # --- MACD (5分) ---
+    macd = calculate_macd(closes, 12, 26, 9)
+    if macd is not None:
+        macd_max = 5
+        sig = macd["signal_text"]
+        if "多头（" in sig:
+            macd_score = 5
+        elif "减弱" in sig:
+            macd_score = 3
+        else:
+            macd_score = 0
+        tech_raw += macd_score
+        tech_max += macd_max
+    else:
+        all_missing.append(f"MACD（需35根K线，当前{kline_count}根）")
+
+    # --- 量价 (5分) ---
+    volume_analysis = analyze_volume(kline_data)
+    if "error" not in volume_analysis:
+        va = volume_analysis
+        vol_raw = 0
+        vol_max = 5
+        if va["up_down_ratio"] > 1.3:
+            vol_raw += 3
+        elif va["up_down_ratio"] > 1.0:
+            vol_raw += 1
+        if 0.8 <= va["volume_ratio"] <= 1.5:
+            vol_raw += 2
+        elif 0.5 <= va["volume_ratio"] <= 2.0:
+            vol_raw += 1
+        tech_raw += vol_raw
+        tech_max += vol_max
+    else:
+        all_missing.append("量价分析（K线不足）")
+
+    # --- 理论满分 ---
+    # 不含筹码: 55; 含筹码: A股60, 港美股58
+    tech_theoretical = 55  # 默认不含筹码
+
+    return {
+        "raw_score": tech_raw,
+        "effective_max": tech_max,
+        "theoretical_max": tech_theoretical,
+        "missing_items": all_missing,
+        "sepa_passed_count": sepa["passed_count"],
+        "source": "kline-stdin",
+    }
 
 
 # ============================================================
@@ -367,12 +494,15 @@ def main():
     CLI 入口: 解析参数 → 加载数据 → 汇总评分 → 输出。
     """
     parser = argparse.ArgumentParser(
-        description="米勒维尼总分汇总脚本 v1.0.0",
+        description="米勒维尼总分汇总脚本 v1.1.0",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 用法示例:
-  # 从预计算 JSON 汇总
+  # 模式A: 从预计算 JSON 汇总
   python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA
+
+  # 模式B: 从 stdin 读取 K 线 直接计算技术面
+  stock-data kline usTSLA day 252 qfq | python calc_score.py --kline-stdin --code usTSLA
 
   # ETF（自动剔除基本面）
   python calc_score.py --tech tech.json --catalyst 10 --code sh510300
@@ -383,10 +513,17 @@ def main():
     )
     parser.add_argument('--code', required=True,
                         help='标的代码（如 usTSLA, sh600519, hk00700, sh510300）')
-    parser.add_argument('--tech', help='技术面 JSON 文件（calc_indicators.py 输出）')
-    parser.add_argument('--fund', help='基本面 JSON 文件（calc_fundamentals.py 输出）')
+
+    # 技术面输入: --tech 和 --kline-stdin 互斥
+    tech_group = parser.add_mutually_exclusive_group()
+    tech_group.add_argument('--tech',
+                            help='技术面 JSON 文件（calc_indicators.py 输出）')
+    tech_group.add_argument('--kline-stdin', action='store_true',
+                            help='从 stdin 读取 K 线 JSON 直接计算技术面（与 --tech 互斥）')
+
+    parser.add_argument('--fund', help='基本面 JSON 文件（calc_fundamentals.py 输出，可选）')
     parser.add_argument('--catalyst', type=float, default=None,
-                        help='催化剂分数（0~15）')
+                        help='催化剂分数（0~15，支持小数）')
     parser.add_argument('--type', choices=['etf', 'etn', 'stock'], default=None,
                         help='手动指定标的类型（覆盖自动检测）')
     args = parser.parse_args()
@@ -402,7 +539,32 @@ def main():
     sec_type = classify_security(args.code, override_type=args.type)
 
     # ========== 加载数据 ==========
-    tech_json = load_json_file(args.tech) if args.tech else None
+    tech_json = None
+    if args.kline_stdin:
+        # 模式B: 从 stdin 读取 K 线 JSON 直接计算技术面
+        try:
+            raw_text = sys.stdin.read()
+        except Exception as e:
+            print(f"[错误] 读取 stdin 失败: {e}", file=sys.stderr)
+            sys.exit(1)
+        if not raw_text.strip():
+            print("[错误] stdin 为空，请通过管道传入 stock-data kline 的输出", file=sys.stderr)
+            sys.exit(1)
+        # 自动判断市场
+        c = args.code.lower()
+        if c.startswith("us"):
+            market = "US"
+        elif c.startswith("hk"):
+            market = "HK"
+        else:
+            market = "A"
+        tech_json = compute_tech_from_kline(raw_text, market=market)
+        if tech_json is None:
+            print("[错误] 无法从 stdin 解析有效 K 线数据", file=sys.stderr)
+            sys.exit(1)
+    elif args.tech:
+        tech_json = load_json_file(args.tech)
+
     fund_json = load_json_file(args.fund) if args.fund else None
     catalyst_score = args.catalyst
 
@@ -422,7 +584,7 @@ def main():
 
     # ========== 文本输出 ==========
     print("=" * 60)
-    print(f"总分汇总结果 (calc_score v1.0.0)")
+    print(f"总分汇总结果 (calc_score v1.1.0)")
     print(f"标的: {args.code}  |  类型: {sec_type}")
     print("=" * 60)
 
@@ -471,7 +633,7 @@ def main():
     # ========== JSON 输出 ==========
     print(f"\n<!-- JSON_OUTPUT_START -->")
     json_out = {
-        "version": "1.0.0",
+        "version": "1.1.0",
         "security_code": args.code,
         "security_type": sec_type,
         "tech_score": {

@@ -10,7 +10,7 @@
 - **仓位建议**：A+(15~20%) / A(10~15%) / B(5~10%) / C(0~5%) / D(0%)
 - **纯数据驱动**：零估算、零编造、所有指标Python脚本计算
 - **四层数据架构**：calc_indicators.py（技术面）+ calc_fundamentals.py v2.0.0（基本面+趋势）+ calc_score.py（汇总+评级）+ web_search（研究层）
-- **确定性汇总**: calc_score.py v1.0.0 自动标的分类(ETF/ETN/个股)+总分汇总+分母剔除+评级
+- **确定性汇总**: calc_score.py v1.1.0 自动标的分类(ETF/ETN/个股)+总分汇总+分母剔除+评级+管道模式
 - **多期趋势数据**: calc_fundamentals.py v2.0.0 新增 trend_data（近4期营收/净利润趋势+净利率变化）
 - **252根K线优先**：满足52周高低点+MA200；不足时降级评分，缺项剔除分母，映射到100分
 - **大盘环境必查**：标普500/上证指数/恒指趋势评估
@@ -119,13 +119,16 @@ python calc_fundamentals.py --market HK --income hk_zhsy.json --balance hk_zcfz.
 | `--balance` | 资产负债表 JSON 文件（用于自算 ROE） | `--balance aapl_balance.json` |
 | `--cashflow` | 现金流量表 JSON 文件（港股可选） | `--cashflow hk_xjll.json` |
 
-### 总分汇总（calc_score.py v1.0.0，v7.0 新增）
+### 总分汇总（calc_score.py v1.1.0，v7.0 新增）
 
-> v7.0 新增。读取 calc_indicators.py 和 calc_fundamentals.py 的 JSON 输出，确定性汇总三大维度总分，自动标的分类（ETF/ETN/个股），输出最终评级和仓位建议。
+> v7.0 新增。读取 calc_indicators.py 和 calc_fundamentals.py 的 JSON 输出，确定性汇总三大维度总分，自动标的分类（ETF/ETN/个股），输出最终评级和仓位建议。v1.1.0 新增 `--kline-stdin` 管道模式，可直接从 stdin 读取 K 线 JSON 计算技术面。
 
 ```bash
-# 最常用: 从预计算 JSON 文件汇总
+# 模式A: 从预计算 JSON 文件汇总（最常用）
 python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA
+
+# 模式B: 从 stdin 读取 K 线 直接计算技术面（与 --tech 互斥）
+stock-data kline usTSLA day 252 qfq | python calc_score.py --kline-stdin --code usTSLA --catalyst 8
 
 # ETF 标的（自动检测，基本面分母剔除）
 python calc_score.py --tech tech.json --catalyst 10 --code sh510300
@@ -136,13 +139,14 @@ python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code AAPL 
 
 #### 汇总脚本命令行参数
 
-| 参数 | 说明 | 示例 |
+| 参数 | 说明 | 必需 |
 |------|------|------|
-| `--code` | 标的代码（必需） | `--code usTSLA` |
-| `--tech` | 技术面 JSON 文件（calc_indicators.py 输出） | `--tech tech.json` |
-| `--fund` | 基本面 JSON 文件（calc_fundamentals.py 输出） | `--fund fund.json` |
-| `--catalyst` | 催化剂分数（0~15） | `--catalyst 8` |
-| `--type` | 手动指定标的类型: etf/etn/stock（覆盖自动检测） | `--type stock` |
+| `--code` | 标的代码（如 usTSLA, sh600519, hk00700, sh510300） | ✅ |
+| `--tech` | 技术面 JSON 文件（calc_indicators.py 输出，与 `--kline-stdin` 互斥） | 可选 |
+| `--kline-stdin` | 从 stdin 读取 K 线 JSON 直接计算技术面（与 `--tech` 互斥） | 可选 |
+| `--fund` | 基本面 JSON 文件（calc_fundamentals.py 输出） | 可选 |
+| `--catalyst` | 催化剂分数（0~15，支持小数） | 可选 |
+| `--type` | 手动指定标的类型: etf/etn/stock（覆盖自动检测） | 可选 |
 
 ### 美股代码格式对照表
 
@@ -248,7 +252,7 @@ python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code AAPL 
 - **stock-data**: 腾讯自选股数据源
 - **技术面脚本**: Python calc_indicators.py v1.3.0 (本仓库)
 - **基本面脚本**: Python calc_fundamentals.py v2.0.0 (本仓库，含 trend_data 多期趋势)
-- **汇总脚本**: Python calc_score.py v1.0.0 (本仓库，v7.0 新增，标的分类+总分汇总+评级)
+- **汇总脚本**: Python calc_score.py v1.1.0 (本仓库，v7.0 新增，标的分类+总分汇总+评级+管道模式)
 
 ## 版本历史
 
@@ -261,6 +265,7 @@ python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code AAPL 
 | v5.3 | 2026-03-10 | 新增calc_fundamentals.py v1.1.0基本面确定性计算(A股/港股/美股全支持); 3个Bug修复(stdin UTF-8/空行名/精确匹配优先); 双计算层架构 |
 | v6.0 | 2026-03-10 | 新增10维度深度研究体系(100分); 5星评级; SEPA+深度研究联合解读矩阵; 三层数据架构(数据+计算+研究); 支持web_search补充 |
 | v7.0 | 2026-03-10 | 新增calc_score.py v1.0.0(标的分类ETF/ETN/个股+总分汇总+分母剔除+评级+仓位); 升级calc_fundamentals.py至v2.0.0(新增trend_data多期趋势); 评级阈值调整(85/70/55/40); 四层数据架构(数据+计算+汇总+研究) |
+| v7.0.1 | 2026-03-10 | calc_score.py升级至v1.1.0: 新增--kline-stdin管道模式(复用calc_indicators.py函数); 修复SEPA硬门槛描述矛盾(统一为"强制D级"); 修复TSLA示例评级错误(58.2分→B级非D级); 统一文档内评级阈值和硬门槛描述 |
 
 ## 免责声明
 
