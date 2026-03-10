@@ -1,4 +1,4 @@
-# 米勒维尼投资分析框架 v6.0 (100分制 + 深度研究)
+# 米勒维尼投资分析框架 v7.0 (100分制 + 深度研究 + 确定性汇总)
 
 基于马克·米勒维尼《股市魔法师》SEPA策略的中短线投资分析框架，融合彼得林奇/巴菲特长线深度研究体系。
 
@@ -7,10 +7,11 @@
 - **双体系分析**: SEPA中短线评分(100分) + 深度研究长线分析(100分)
 - **100分制评分体系**：基本面(25) + 技术面(60) + 催化剂(15)
 - **深度研究10维度**: 商业理解/收入分解/行业背景/竞争格局/财务质量/风险下行/管理团队/牛熊情景/估值思考/长期论点
-- **仓位建议**：A+(20%) / A(15%) / B(10%) / C(5%) / D(0%)
+- **仓位建议**：A+(15~20%) / A(10~15%) / B(5~10%) / C(0~5%) / D(0%)
 - **纯数据驱动**：零估算、零编造、所有指标Python脚本计算
-- **双计算层**：calc_indicators.py（技术面）+ calc_fundamentals.py（基本面）
-- **研究层**: web_search 补充行业/竞争/管理层等定性信息
+- **四层数据架构**：calc_indicators.py（技术面）+ calc_fundamentals.py v2.0.0（基本面+趋势）+ calc_score.py（汇总+评级）+ web_search（研究层）
+- **确定性汇总**: calc_score.py v1.0.0 自动标的分类(ETF/ETN/个股)+总分汇总+分母剔除+评级
+- **多期趋势数据**: calc_fundamentals.py v2.0.0 新增 trend_data（近4期营收/净利润趋势+净利率变化）
 - **252根K线优先**：满足52周高低点+MA200；不足时降级评分，缺项剔除分母，映射到100分
 - **大盘环境必查**：标普500/上证指数/恒指趋势评估
 - **美股代码格式支持**：自动适配不同接口的代码格式要求
@@ -21,7 +22,7 @@
 ## 依赖
 
 - **stock-data v2.3.0+** (必需): 腾讯自选股数据源
-- **Python 3.x** (必需): 用于运行 calc_indicators.py
+- **Python 3.x** (必需): 用于运行 calc_indicators.py / calc_fundamentals.py / calc_score.py
 
 ## 安装
 
@@ -86,9 +87,9 @@ stock-data kline usSNDK day 252 qfq | python calc_indicators.py --chip sndk_chip
 | `--chip` | 筹码JSON文件路径（stock-data chip 输出） | `--chip sndk_chip.json` |
 | `--market` | 市场类型: A(A股)/HK(港股)/US(美股)，默认A | `--market US` |
 
-### 基本面评分（calc_fundamentals.py）
+### 基本面评分（calc_fundamentals.py v2.0.0）
 
-> v5.3 新增。基本面指标也纳入 Python 确定性计算，消除大模型手动解析 JSON 的幻觉风险。
+> v5.3 新增，v7.0 升级到 v2.0.0。基本面指标 Python 确定性计算，消除大模型手动解析 JSON 的幻觉风险。v2.0 新增 `trend_data` 多期趋势数据（近4期营收/净利润趋势+净利率变化），为深度研究"财务质量"维度提供数据驱动。
 
 ```powershell
 # === A股（管道最简单，推荐 lrb，含现金流） ===
@@ -117,6 +118,31 @@ python calc_fundamentals.py --market HK --income hk_zhsy.json --balance hk_zcfz.
 | `--income` | 利润表 JSON 文件（港美股必需） | `--income aapl_income.json` |
 | `--balance` | 资产负债表 JSON 文件（用于自算 ROE） | `--balance aapl_balance.json` |
 | `--cashflow` | 现金流量表 JSON 文件（港股可选） | `--cashflow hk_xjll.json` |
+
+### 总分汇总（calc_score.py v1.0.0，v7.0 新增）
+
+> v7.0 新增。读取 calc_indicators.py 和 calc_fundamentals.py 的 JSON 输出，确定性汇总三大维度总分，自动标的分类（ETF/ETN/个股），输出最终评级和仓位建议。
+
+```bash
+# 最常用: 从预计算 JSON 文件汇总
+python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code usTSLA
+
+# ETF 标的（自动检测，基本面分母剔除）
+python calc_score.py --tech tech.json --catalyst 10 --code sh510300
+
+# 手动指定标的类型
+python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code AAPL --type stock
+```
+
+#### 汇总脚本命令行参数
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `--code` | 标的代码（必需） | `--code usTSLA` |
+| `--tech` | 技术面 JSON 文件（calc_indicators.py 输出） | `--tech tech.json` |
+| `--fund` | 基本面 JSON 文件（calc_fundamentals.py 输出） | `--fund fund.json` |
+| `--catalyst` | 催化剂分数（0~15） | `--catalyst 8` |
+| `--type` | 手动指定标的类型: etf/etn/stock（覆盖自动检测） | `--type stock` |
 
 ### 美股代码格式对照表
 
@@ -201,11 +227,11 @@ python calc_fundamentals.py --market HK --income hk_zhsy.json --balance hk_zcfz.
 
 | 映射后总分 | 等级 | 建议 | 仓位 |
 |------|------|------|------|
-| 90-100 | A+ | 强烈建议 | 20% |
-| 80-89 | A | 可以建仓 | 15% |
-| 70-79 | B | 小仓位试探 | 10% |
-| 60-69 | C | 建议观望 | 5% |
-| <60 | D | 明确回避 | 0% |
+| ≥85 | A+ | 强力买入候选 | 15~20% |
+| ≥70 | A | 买入候选 | 10~15% |
+| ≥55 | B | 观察名单 | 5~10% |
+| ≥40 | C | 谨慎观望 | 0~5% |
+| <40 | D | 排除 | 0% |
 
 > 报告须同时输出：原始得分、有效满分、映射后总分、缺失项列表、K线完整性等级、置信等级。
 
@@ -219,9 +245,10 @@ python calc_fundamentals.py --market HK --income hk_zhsy.json --balance hk_zcfz.
 
 ## 数据来源
 
-- **stock-data**: 腾讯自选股 (https://github.com/yourname/stock-data)
-- **技术面脚本**: Python calc_indicators.py (本仓库)
-- **基本面脚本**: Python calc_fundamentals.py (本仓库)
+- **stock-data**: 腾讯自选股数据源
+- **技术面脚本**: Python calc_indicators.py v1.3.0 (本仓库)
+- **基本面脚本**: Python calc_fundamentals.py v2.0.0 (本仓库，含 trend_data 多期趋势)
+- **汇总脚本**: Python calc_score.py v1.0.0 (本仓库，v7.0 新增，标的分类+总分汇总+评级)
 
 ## 版本历史
 
@@ -233,6 +260,7 @@ python calc_fundamentals.py --market HK --income hk_zhsy.json --balance hk_zcfz.
 | v5.2.1 | 2026-03-10 | calc_indicators v1.3.0: 修复coverage_pct分母写死100;52周高低点改用high/low;MACD评分补全3分档;新增--chip/--market参数;Windows兼容(自动过滤HTTP日志);移除废弃score_cap |
 | v5.3 | 2026-03-10 | 新增calc_fundamentals.py v1.1.0基本面确定性计算(A股/港股/美股全支持); 3个Bug修复(stdin UTF-8/空行名/精确匹配优先); 双计算层架构 |
 | v6.0 | 2026-03-10 | 新增10维度深度研究体系(100分); 5星评级; SEPA+深度研究联合解读矩阵; 三层数据架构(数据+计算+研究); 支持web_search补充 |
+| v7.0 | 2026-03-10 | 新增calc_score.py v1.0.0(标的分类ETF/ETN/个股+总分汇总+分母剔除+评级+仓位); 升级calc_fundamentals.py至v2.0.0(新增trend_data多期趋势); 评级阈值调整(85/70/55/40); 四层数据架构(数据+计算+汇总+研究) |
 
 ## 免责声明
 

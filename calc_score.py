@@ -19,9 +19,6 @@
   # 手动指定标的类型（覆盖自动检测）
   python calc_score.py --tech tech.json --fund fund.json --catalyst 8 --code AAPL --type stock
 
-  # 从 stdin 读 K 线 + 自行计算技术面（需 calc_indicators.py 在同目录）
-  stock-data kline usTSLA 250 | python calc_score.py --kline-stdin --fund fund.json --catalyst 8 --code usTSLA
-
 依赖: 仅使用 Python 标准库（json/sys/re/argparse/math/os）
 """
 
