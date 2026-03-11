@@ -1,6 +1,18 @@
-# 米勒维尼投资分析框架 v7.0 (100分制 + 深度研究 + 确定性汇总)
+# SEPA 投资分析框架 v7.0
+
+> **Skill 短名**: `sepa` — 直接告诉 AI "用 sepa 分析 XXX" 即可触发  
+> **仓库目录名**: `stock-analysis-framework`（Git 地址不变，但点名调用请用 `sepa`）
 
 基于马克·米勒维尼《股市魔法师》SEPA策略的中短线投资分析框架，融合彼得林奇/巴菲特长线深度研究体系。
+
+## ⚠️ 与 stock-data 的区别
+
+| Skill | 短名 | 职责 | 产出 |
+|-------|------|------|------|
+| **stock-data** | `stock-data` | 获取原始数据（K线、行情、财务等） | 原始数据 |
+| **本框架** | `sepa` | 按米勒维尼框架组织分析、评分、出报告 | 评分报告 |
+
+> `sepa` 依赖 `stock-data` 取数据，但两者职责不同、不可互换。
 
 ## 核心特性
 
@@ -26,12 +38,15 @@
 
 ## 安装
 
+> **兼容说明**: 仓库目录名仍为 `stock-analysis-framework`，Git 地址不变。  
+> AI 通过 `SKILL.md` 中的 `name: sepa` 识别和调用本 skill，无需改目录名。
+
 ### 方式1：Git 克隆
 
 ```bash
 cd ~/.openclaw/workspace/skills
 git clone https://github.com/amebapu/stock-analysis-framework.git
-cd stock-analysis-framework
+# 目录名保持 stock-analysis-framework，skill 点名用 sepa
 ```
 
 ### 方式2：手动下载
